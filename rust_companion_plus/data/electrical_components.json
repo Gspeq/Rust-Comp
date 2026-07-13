@@ -1,0 +1,369 @@
+[
+  {
+    "name": "Auto Turret",
+    "category": "load",
+    "power_draw": 10,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "auto turret",
+      "auto turrets",
+      "turret",
+      "turrets"
+    ]
+  },
+  {
+    "name": "SAM Site",
+    "category": "load",
+    "power_draw": 25,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "sam",
+      "sam site",
+      "sam sites"
+    ]
+  },
+  {
+    "name": "Ceiling Light",
+    "category": "load",
+    "power_draw": 2,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "ceiling light",
+      "ceiling lights",
+      "light",
+      "lights"
+    ]
+  },
+  {
+    "name": "Fluorescent Light",
+    "category": "load",
+    "power_draw": 2,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "fluorescent light",
+      "fluorescent lights"
+    ]
+  },
+  {
+    "name": "Door Controller",
+    "category": "load",
+    "power_draw": 1,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "door controller",
+      "door controllers",
+      "door",
+      "doors"
+    ]
+  },
+  {
+    "name": "Electric Furnace",
+    "category": "load",
+    "power_draw": 3,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "electric furnace",
+      "electric furnaces",
+      "furnace",
+      "furnaces"
+    ]
+  },
+  {
+    "name": "CCTV Camera",
+    "category": "load",
+    "power_draw": 3,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "cctv",
+      "cctv camera",
+      "cctv cameras",
+      "camera",
+      "cameras"
+    ]
+  },
+  {
+    "name": "Vending Machine",
+    "category": "load",
+    "power_draw": 5,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "vending machine",
+      "vending machines",
+      "vending"
+    ]
+  },
+  {
+    "name": "Elevator",
+    "category": "load",
+    "power_draw": 5,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "elevator",
+      "elevators"
+    ]
+  },
+  {
+    "name": "Water Pump",
+    "category": "load",
+    "power_draw": 5,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "water pump",
+      "water pumps",
+      "pump",
+      "pumps"
+    ]
+  },
+  {
+    "name": "Powered Water Purifier",
+    "category": "load",
+    "power_draw": 5,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "powered water purifier",
+      "water purifier",
+      "purifier"
+    ]
+  },
+  {
+    "name": "Electric Heater",
+    "category": "load",
+    "power_draw": 3,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "electric heater",
+      "electric heaters",
+      "heater",
+      "heaters"
+    ]
+  },
+  {
+    "name": "Industrial Conveyor",
+    "category": "load",
+    "power_draw": 1,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "industrial conveyor",
+      "industrial conveyors",
+      "conveyor",
+      "conveyors"
+    ]
+  },
+  {
+    "name": "Industrial Crafter",
+    "category": "load",
+    "power_draw": 1,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "industrial crafter",
+      "industrial crafters",
+      "crafter",
+      "crafters"
+    ]
+  },
+  {
+    "name": "Smart Alarm",
+    "category": "load",
+    "power_draw": 1,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "smart alarm",
+      "smart alarms",
+      "alarm",
+      "alarms"
+    ]
+  },
+  {
+    "name": "Smart Switch",
+    "category": "load",
+    "power_draw": 1,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "smart switch",
+      "smart switches"
+    ]
+  },
+  {
+    "name": "Electrical Branch",
+    "category": "logic",
+    "power_draw": 1,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "electrical branch",
+      "electrical branches",
+      "branch",
+      "branches"
+    ]
+  },
+  {
+    "name": "Splitter",
+    "category": "logic",
+    "power_draw": 0,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "splitter",
+      "splitters"
+    ]
+  },
+  {
+    "name": "Root Combiner",
+    "category": "logic",
+    "power_draw": 0,
+    "max_output": 0,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "aliases": [
+      "root combiner",
+      "root combiners",
+      "combiner",
+      "combiners"
+    ]
+  },
+  {
+    "name": "Large Solar Panel",
+    "category": "generation",
+    "power_draw": 0,
+    "max_output": 20,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "generation_kind": "solar",
+    "aliases": [
+      "large solar panel",
+      "large solar panels",
+      "solar panel",
+      "solar panels",
+      "solar"
+    ]
+  },
+  {
+    "name": "Wind Turbine",
+    "category": "generation",
+    "power_draw": 0,
+    "max_output": 150,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "generation_kind": "wind",
+    "aliases": [
+      "wind turbine",
+      "wind turbines",
+      "turbine",
+      "turbines",
+      "windmill",
+      "windmills"
+    ]
+  },
+  {
+    "name": "Small Generator",
+    "category": "generation",
+    "power_draw": 0,
+    "max_output": 40,
+    "capacity_rwm": 0,
+    "output_limit": 0,
+    "charge_efficiency": 1.0,
+    "generation_kind": "fuel",
+    "aliases": [
+      "small generator",
+      "small generators",
+      "generator",
+      "generators"
+    ]
+  },
+  {
+    "name": "Small Rechargeable Battery",
+    "category": "storage",
+    "power_draw": 0,
+    "max_output": 0,
+    "capacity_rwm": 400,
+    "output_limit": 15,
+    "charge_efficiency": 0.8,
+    "aliases": [
+      "small battery",
+      "small batteries"
+    ]
+  },
+  {
+    "name": "Medium Rechargeable Battery",
+    "category": "storage",
+    "power_draw": 0,
+    "max_output": 0,
+    "capacity_rwm": 9000,
+    "output_limit": 50,
+    "charge_efficiency": 0.8,
+    "aliases": [
+      "medium battery",
+      "medium batteries"
+    ]
+  },
+  {
+    "name": "Large Rechargeable Battery",
+    "category": "storage",
+    "power_draw": 0,
+    "max_output": 0,
+    "capacity_rwm": 24000,
+    "output_limit": 100,
+    "charge_efficiency": 0.8,
+    "aliases": [
+      "large battery",
+      "large batteries",
+      "large battery backup",
+      "battery backup"
+    ]
+  }
+]
