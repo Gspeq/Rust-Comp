@@ -82,7 +82,7 @@ class LiveSyncResult:
         elif self.snapshot:
             server_name = str(self.snapshot.server.get("name") or "Detected server")
         source = self.detected.source if self.detected else "manual profile"
-        suffix = f" Â· {len(self.warnings)} warning(s)" if self.warnings else ""
+        suffix = f" - {len(self.warnings)} warning(s)" if self.warnings else ""
         return f"Synced {server_name} via {source}{suffix}"
 
 
