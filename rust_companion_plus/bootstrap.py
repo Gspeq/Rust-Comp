@@ -1,59 +1,208 @@
 from __future__ import annotations
 
-import getpass
+import argparse
 import os
 import sys
 import time
+from datetime import datetime
+from pathlib import Path
+from typing import Any, Callable
 
+from rust_companion_plus.config import APP_DATA_DIR, FCM_CONFIG_PATH
 from rust_companion_plus.models import RustCredentials
+from rust_companion_plus.services.pairing import (
+    PairingNotificationInbox,
+    PairingRecord,
+    load_fcm_config,
+    parse_pairing_payload,
+    save_fcm_config,
+)
+from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
 from rust_companion_plus.storage import JsonStore
 
 
-ASCII_ART = r"""
-  ____  _   _ ____ _____    ____ ___  __  __ ____   _    _   _ ___ ___  _   _ _
- |  _ \| | | / ___|_   _|  / ___/ _ \|  \/  |  _ \ / \  | \ | |_ _/ _ \| \ | | |
- | |_) | | | \___ \ | |   | |  | | | | |\/| | |_) / _ \ |  \| || | | | |  \| | |
- |  _ <| |_| |___) || |   | |__| |_| | |  | |  __/ ___ \| |\  || | |_| | |\  |_|
- |_| \_\\___/|____/ |_|    \____\___/|_|  |_|_| /_/   \_\_| \_|___\___/|_| \_(_)
-"""
+LAUNCHER_SETUP_VERSION = 3
+RESET = "\033[0m"
+BOLD = "\033[1m"
+ORANGE = "\033[38;5;208m"
+AMBER = "\033[38;5;214m"
+YELLOW = "\033[38;5;220m"
+GREEN = "\033[38;5;82m"
+CYAN = "\033[38;5;51m"
+RED = "\033[38;5;196m"
+WHITE = "\033[97m"
+GRAY = "\033[38;5;245m"
+
+ASCII_LINES = (
+    r"  ____  _   _ ____ _____    ____ ___  __  __ ____   _    _   _ ___ ___  _   _ _ ",
+    r" |  _ \| | | / ___|_   _|  / ___/ _ \|  \/  |  _ \ / \  | \ | |_ _/ _ \| \ | | |",
+    r" | |_) | | | \___ \ | |   | |  | | | | |\/| | |_) / _ \ |  \| || | | | |  \| | |",
+    r" |  _ <| |_| |___) || |   | |__| |_| | |  | |  __/ ___ \| |\  || | |_| | |\  |_|",
+    r" |_| \_\\___/|____/ |_|    \____\___/|_|  |_|_| /_/   \_\_| \_|___\___/|_| \_(_)",
+)
+
+
+def _enable_terminal_color() -> None:
+    if os.name == "nt":
+        os.system("")
+
+
+def _paint(text: str, color: str = "", *, bold: bool = False) -> str:
+    prefix = color + (BOLD if bold else "")
+    return f"{prefix}{text}{RESET}" if prefix else text
+
+
+def _rule(char: str = "=", width: int = 92, color: str = GRAY) -> None:
+    print(_paint(char * width, color))
 
 
 def print_header() -> None:
+    _enable_terminal_color()
     os.system("cls" if os.name == "nt" else "clear")
-    print(ASCII_ART)
-    print("                         Developed by Taylor Marshall")
-    print("=" * 92)
+    print()
+    _rule("#", color=ORANGE)
+    for line, color in zip(ASCII_LINES, (ORANGE, ORANGE, AMBER, YELLOW, YELLOW)):
+        print(_paint(line, color, bold=True))
+    print(_paint("                         Developed by Taylor Marshall", WHITE, bold=True))
+    print(_paint("       LIVE SESSION GATE  //  SERVER PROFILE VAULT  //  RUST+ PAIRING CONTROL", CYAN))
+    _rule("#", color=ORANGE)
+    print()
+
+
+def _print_setup_banner() -> None:
+    print(_paint("+------------------------------------------------------------------------------------------+", ORANGE, bold=True))
+    print(_paint("|                     COMPANION+ INITIALIZATION / INTEGRATION VAULT                       |", AMBER, bold=True))
+    print(_paint("+------------------------------------------------------------------------------------------+", ORANGE, bold=True))
+    print(_paint("|  [01] Persistent AppData vault          [ONLINE]                                         |", GREEN))
+    print(_paint("|  [02] Public intelligence providers     [CHECKING]                                       |", YELLOW))
+    print(_paint("|  [03] Live Rust process gate            [ARMED]                                          |", CYAN))
+    print(_paint("|  [04] Per-server Rust+ profiles          [LOCKED UNTIL SERVER DETECTED]                    |", ORANGE))
+    print(_paint("+------------------------------------------------------------------------------------------+", ORANGE, bold=True))
+    print()
+    print(_paint(f"Persistent data directory: {APP_DATA_DIR}", GRAY))
+    print(_paint("API-key input is visible while typing. Saved values carry into future source and EXE runs.", GRAY))
+    print()
+
+
+def _visible_optional_value(label: str, existing: str) -> str:
+    if existing:
+        print(_paint(f"[LOADED] {label}: saved value ending in ...{existing[-4:]}", GREEN))
+        return existing
+    return input(_paint(f"> {label} (optional, visible input): ", AMBER)).strip()
 
 
 def configure_first_run(store: JsonStore) -> None:
-    if store.get("launcher_setup_complete", False):
-        return
-    print("First-time integration setup")
-    print("These keys are optional. Press Enter to use public/manual features only.\n")
+    version = int(store.get("launcher_setup_version", 0) or 0)
     keys = dict(store.get("api_keys", {}) or {})
-    if not keys.get("battlemetrics"):
-        keys["battlemetrics"] = getpass.getpass("BattleMetrics API token (optional): ").strip()
-    if not keys.get("rustmaps"):
-        keys["rustmaps"] = getpass.getpass("RustMaps API key (optional): ").strip()
+    if version >= LAUNCHER_SETUP_VERSION:
+        configured = [name for name in ("battlemetrics", "rustmaps") if keys.get(name)]
+        if configured:
+            print(_paint("[VAULT] Global API integrations loaded from persistent storage.", GREEN))
+        else:
+            print(_paint("[VAULT] Public/manual integration mode loaded; optional API keys were previously skipped.", GRAY))
+        return
+
+    _print_setup_banner()
+    keys["battlemetrics"] = _visible_optional_value(
+        "BattleMetrics API token", str(keys.get("battlemetrics", "") or "")
+    )
+    keys["rustmaps"] = _visible_optional_value(
+        "RustMaps API key", str(keys.get("rustmaps", "") or "")
+    )
     store.set("api_keys", keys)
     store.set("launcher_setup_complete", True)
+    store.set("launcher_setup_version", LAUNCHER_SETUP_VERSION)
+    print()
+    print(_paint("[CONFIG SAVED] Global integrations now follow every server profile.", GREEN, bold=True))
+    _rule("-", color=GRAY)
+
+
+def _status_line(message: str, color: str = CYAN) -> None:
+    timestamp = time.strftime("%H:%M:%S")
+    print(f"{_paint('[' + timestamp + ']', GRAY)} {_paint(message, color)}")
 
 
 def wait_for_server(store: JsonStore) -> DetectionReport:
     finder = RustServerFinder(store)
     attempts = 0
+    last_pids: tuple[int, ...] = ()
+    stable_socket_endpoint = ""
+    stable_socket_count = 0
+
+    print(_paint("Thanks! Rust session watcher is online.", GREEN, bold=True))
+    print(_paint("Launch Rust, then join a server. Closed-game and old-log sessions are rejected.", WHITE))
+    _rule("-", color=GRAY)
+
     while True:
         attempts += 1
-        report = finder.detect_once(enrich=False)
-        if report.selected is not None:
-            # Enrich only once after detection instead of hammering public APIs while waiting.
-            return finder.detect_once(enrich=True)
+        session = finder.get_rust_process_session()
+        if not session.running:
+            last_pids = ()
+            stable_socket_endpoint = ""
+            stable_socket_count = 0
+            if attempts == 1 or attempts % 5 == 0:
+                _status_line("WAITING FOR RUSTCLIENT.EXE TO START", YELLOW)
+            time.sleep(2)
+            continue
+
+        pids = tuple(session.pids)
+        if pids != last_pids:
+            last_pids = pids
+            stable_socket_endpoint = ""
+            stable_socket_count = 0
+            _status_line(
+                f"RUST PROCESS ONLINE  PID={','.join(map(str, pids))}  SESSION={session.started_at or 'unknown'}",
+                GREEN,
+            )
+            _status_line("WAITING FOR A NEW SERVER CONNECTION FROM THIS RUST SESSION", CYAN)
+
+        report = finder.detect_once(
+            enrich=False,
+            require_running_process=True,
+            session_started_at=session.started_at_epoch,
+            current_session_only=True,
+        )
+        selected = report.selected
+
+        if selected is not None and selected.source.startswith("rust_log_"):
+            enriched = finder.detect_once(
+                enrich=True,
+                require_running_process=True,
+                session_started_at=session.started_at_epoch,
+                current_session_only=True,
+            )
+            if enriched.selected and enriched.selected.endpoint == selected.endpoint:
+                return enriched
+
+        if selected is not None and selected.source == "rust_process_remote_socket":
+            if selected.endpoint == stable_socket_endpoint:
+                stable_socket_count += 1
+            else:
+                stable_socket_endpoint = selected.endpoint
+                stable_socket_count = 1
+            if stable_socket_count >= 3:
+                enriched = finder.detect_once(
+                    enrich=True,
+                    require_running_process=True,
+                    session_started_at=session.started_at_epoch,
+                    current_session_only=True,
+                )
+                if enriched.selected and enriched.selected.endpoint == selected.endpoint:
+                    enriched.warnings.append(
+                        "Endpoint was confirmed through a stable Rust process socket because no current-session "
+                        "Raknet connection line was available."
+                    )
+                    return enriched
+        else:
+            stable_socket_endpoint = ""
+            stable_socket_count = 0
+
         if attempts == 1 or attempts % 5 == 0:
-            status = report.debug[-1] if report.debug else "No endpoint yet"
-            print(f"[{time.strftime('%H:%M:%S')}] {status}")
+            status = report.debug[-1] if report.debug else "No current-session endpoint yet"
+            _status_line(status.upper(), CYAN)
             if report.log_path:
-                print(f"             Watching: {report.log_path}")
+                print(_paint(f"             Watching: {report.log_path}", GRAY))
         time.sleep(2)
 
 
@@ -61,95 +210,400 @@ def _profile_key(host: str, game_port: int) -> str:
     return f"{host}:{game_port}"
 
 
-def prepare_credentials(store: JsonStore, report: DetectionReport) -> RustCredentials:
+def _print_server_lock(report: DetectionReport) -> None:
     assert report.selected is not None
     selected = report.selected
-    detected = store.get("detected_server", {}) or {}
-    key = _profile_key(selected.host, selected.port)
-    profiles = dict(store.get("credential_profiles", {}) or {})
-    existing = profiles.get(key)
-    current = RustCredentials.from_dict(existing or store.get("credentials", {}))
-
-    if existing is None and current.host and current.host != selected.host:
-        # Never reuse a server-specific token against a different host.
-        current = RustCredentials(host=selected.host, steam_id=current.steam_id)
-    else:
-        current.host = selected.host
-
-    published_port = int(detected.get("rust_app_port", 0) or 0)
-    if published_port and not current.port:
-        current.port = published_port
-
-    print("\nServer detected")
-    print(f"  Game endpoint : {selected.endpoint}")
+    print()
+    _rule("=", color=GREEN)
+    print(_paint("SERVER LOCK ACQUIRED", GREEN, bold=True))
+    print(f"  Game endpoint : {_paint(selected.endpoint, WHITE, bold=True)}")
     print(f"  Evidence      : {selected.source} ({selected.confidence:.0%} confidence)")
+    print(f"  Observed      : {selected.observed_at or 'current process socket'}")
     if report.log_path:
         print(f"  Rust log      : {report.log_path}")
-    bm = report.battlemetrics
-    if bm:
+    if report.battlemetrics:
+        bm = report.battlemetrics
         print(f"  BattleMetrics : ID {bm.get('id') or '?'} - {bm.get('name') or 'Unnamed server'}")
+    if report.rust_app_port:
+        print(
+            f"  Rust+ port    : {_paint(str(report.rust_app_port), GREEN, bold=True)} "
+            f"({report.rust_app_port_source or 'automatic'})"
+        )
+    else:
+        print(_paint("  Rust+ port    : not published by automatic sources", YELLOW))
     for warning in report.warnings:
-        print(f"  Warning       : {warning}")
+        print(_paint(f"  Warning       : {warning}", YELLOW))
+    _rule("=", color=GREEN)
 
-    print("\nRust+ pairing values are server-specific. Leave a field blank to launch in public-info mode.")
+
+def _load_current_profile(store: JsonStore, report: DetectionReport) -> tuple[str, RustCredentials]:
+    assert report.selected is not None
+    selected = report.selected
+    key = _profile_key(selected.host, selected.port)
+    profiles = dict(store.get("credential_profiles", {}) or {})
+    identity = dict(store.get("player_identity", {}) or {})
+    legacy = RustCredentials.from_dict(store.get("credentials", {}))
+    saved = RustCredentials.from_dict(profiles.get(key, {}))
+
+    steam_id = saved.steam_id or int(identity.get("steam_id", 0) or 0) or legacy.steam_id
+    current = RustCredentials(
+        host=selected.host,
+        port=saved.port,
+        steam_id=steam_id,
+        player_token=saved.player_token,
+    )
+    if report.rust_app_port:
+        if current.port and current.port != report.rust_app_port:
+            print(
+                _paint(
+                    f"[PORT UPDATE] Saved port {current.port} changed to published port {report.rust_app_port}.",
+                    YELLOW,
+                )
+            )
+        current.port = report.rust_app_port
+    return key, current
+
+
+def _missing_fields(current: RustCredentials) -> list[str]:
+    result: list[str] = []
     if not current.steam_id:
-        current.steam_id = _prompt_int("Steam ID (17 digits, optional): ")
+        result.append("Steam ID")
     if not current.port:
-        current.port = _prompt_int("Rust+ companion/app port (optional): ")
+        result.append("Rust+ companion port")
     if not current.player_token:
-        current.player_token = _prompt_secret_int("Rust+ player token (optional): ")
+        result.append("Rust+ player token")
+    return result
 
-    store.set("credentials", current.to_dict())
+
+def _save_profile(
+    store: JsonStore,
+    key: str,
+    current: RustCredentials,
+    report: DetectionReport,
+    *,
+    pairing_source: str = "",
+) -> None:
+    profiles = dict(store.get("credential_profiles", {}) or {})
     profiles[key] = current.to_dict()
     store.set("credential_profiles", profiles)
+    store.set("credentials", current.to_dict())
+    store.set("player_identity", {"steam_id": current.steam_id})
+
+    metadata = dict(store.get("credential_profile_metadata", {}) or {})
+    metadata[key] = {
+        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "game_endpoint": key,
+        "rust_app_port_source": report.rust_app_port_source or pairing_source or "saved/manual",
+        "pairing_source": pairing_source,
+        "battlemetrics_id": str(report.battlemetrics.get("id") or ""),
+    }
+    store.set("credential_profile_metadata", metadata)
+
+
+def _apply_pairing_record(current: RustCredentials, record: PairingRecord, expected_host: str) -> bool:
+    if record.host and not record.matches_host(expected_host):
+        print(_paint(f"[REJECTED] Pairing data is for {record.host}, not {expected_host}.", RED))
+        return False
+    current.host = expected_host
+    current.port = record.port or current.port
+    current.steam_id = record.steam_id or current.steam_id
+    current.player_token = record.player_token or current.player_token
+    return True
+
+
+def _import_pairing_text(current: RustCredentials, expected_host: str) -> str:
+    print(_paint("Paste one-line Rust+ pairing JSON or a pairing JSON file path.", WHITE))
+    raw = input(_paint("> Pairing JSON / file: ", AMBER)).strip()
+    record = parse_pairing_payload(raw, source="launcher_pairing_import")
+    if record is None:
+        print(_paint("[INVALID] No pairing fields were found.", RED))
+        return ""
+    if not _apply_pairing_record(current, record, expected_host):
+        return ""
+    print(_paint("[IMPORTED] Pairing data matches the detected server.", GREEN))
+    return record.source
+
+
+def _find_fcm_config() -> dict[str, Any] | None:
+    if FCM_CONFIG_PATH.is_file():
+        config = load_fcm_config(FCM_CONFIG_PATH)
+        if config:
+            return config
+    for path in (
+        Path.cwd() / "rustplus.py.config.json",
+        Path.home() / "Downloads" / "rustplus.py.config.json",
+    ):
+        if path.is_file():
+            config = load_fcm_config(path)
+            if config:
+                save_fcm_config(FCM_CONFIG_PATH, config)
+                return config
+    return None
+
+
+def _request_fcm_config() -> dict[str, Any] | None:
+    print(_paint("Paste the rustplus.py FCM config JSON or its file path.", WHITE))
+    print(_paint("Press Enter to return to the profile menu.", GRAY))
+    raw = input(_paint("> FCM config JSON / path: ", AMBER)).strip()
+    if not raw:
+        return None
+    config = load_fcm_config(raw)
+    if config is None:
+        print(_paint("[INVALID] That is not a rustplus.py FCM configuration.", RED))
+        return None
+    save_fcm_config(FCM_CONFIG_PATH, config)
+    print(_paint(f"[SAVED] Pairing receiver configuration: {FCM_CONFIG_PATH}", GREEN))
+    return config
+
+
+def _listen_for_pairing(
+    current: RustCredentials,
+    expected_host: str,
+    finder: RustServerFinder,
+) -> str:
+    config = _find_fcm_config() or _request_fcm_config()
+    if config is None:
+        return ""
+    print()
+    print(_paint("PAIRING RECEIVER ARMED", CYAN, bold=True))
+    print(_paint("In Rust, open the Rust+ menu and choose Pair With Server.", WHITE))
+    print(_paint("If already paired, unpair and pair again to send a fresh notification.", YELLOW))
+    print(_paint("Waiting for a notification matching this server. Ctrl+C cancels.", GRAY))
+
+    inbox = PairingNotificationInbox(config)
+    record = inbox.wait_for(
+        expected_host,
+        process_alive=lambda: finder.get_rust_process_session().running,
+    )
+    if record is None:
+        print(_paint("[PAIRING STOPPED] Rust closed before a matching notification arrived.", YELLOW))
+        return ""
+    if not _apply_pairing_record(current, record, expected_host):
+        return ""
+    print(_paint("[PAIRING RECEIVED] Port, Steam ID, and player token imported automatically.", GREEN, bold=True))
+    return record.source
+
+
+def _prompt_required_int(label: str, validator: Callable[[int], bool]) -> int:
+    while True:
+        raw = input(_paint(f"> {label} (visible input): ", AMBER)).strip()
+        try:
+            value = int(raw)
+        except ValueError:
+            print(_paint("  Enter digits only.", RED))
+            continue
+        if validator(value):
+            return value
+        print(_paint("  Value is outside the accepted range.", RED))
+
+
+def _manual_complete_profile(current: RustCredentials) -> None:
+    if not current.steam_id:
+        current.steam_id = _prompt_required_int(
+            "Steam ID (17 digits)", lambda value: len(str(value)) == 17
+        )
+    if not current.port:
+        current.port = _prompt_required_int(
+            "Rust+ companion/app port", lambda value: 1 <= value <= 65535
+        )
+    if not current.player_token:
+        current.player_token = _prompt_required_int(
+            "Rust+ player token", lambda value: value > 0
+        )
+
+
+def _retry_port_discovery(store: JsonStore) -> DetectionReport | None:
+    finder = RustServerFinder(store)
+    session = finder.get_rust_process_session()
+    if not session.running:
+        print(_paint("[FAILED] Rust is no longer running.", RED))
+        return None
+    report = finder.detect_once(
+        enrich=True,
+        require_running_process=True,
+        session_started_at=session.started_at_epoch,
+        current_session_only=True,
+    )
+    if report.selected is None:
+        print(_paint("[FAILED] The current server connection could not be reconfirmed.", RED))
+        return None
+    if report.rust_app_port:
+        print(_paint(f"[FOUND] Rust+ port {report.rust_app_port} via {report.rust_app_port_source}.", GREEN))
+    else:
+        print(_paint("[NOT PUBLISHED] Automatic sources still expose no Rust+ port.", YELLOW))
+    return report
+
+
+def _collect_missing_fields(
+    store: JsonStore,
+    report: DetectionReport,
+    key: str,
+    current: RustCredentials,
+) -> tuple[DetectionReport, str]:
+    assert report.selected is not None
+    finder = RustServerFinder(store)
+    pairing_source = ""
+
+    while not current.is_complete():
+        print()
+        print(_paint(f"SERVER PROFILE INCOMPLETE: {', '.join(_missing_fields(current))}", YELLOW, bold=True))
+        print(_paint("The GUI stays locked until this exact server profile is complete.", GRAY))
+        print("  [A] Auto-receive a fresh Rust+ pairing notification")
+        print("  [P] Paste/import a Rust+ pairing payload")
+        print("  [R] Retry log, BattleMetrics, and A2S app-port discovery")
+        print("  [M] Enter only the missing values manually")
+        choice = input(_paint("> Select A / P / R / M: ", AMBER)).strip().casefold()
+
+        if choice == "a":
+            pairing_source = _listen_for_pairing(current, report.selected.host, finder) or pairing_source
+        elif choice == "p":
+            pairing_source = _import_pairing_text(current, report.selected.host) or pairing_source
+        elif choice == "r":
+            refreshed = _retry_port_discovery(store)
+            if refreshed:
+                report = refreshed
+                current.port = refreshed.rust_app_port or current.port
+        elif choice == "m":
+            _manual_complete_profile(current)
+        else:
+            print(_paint("Choose A, P, R, or M.", RED))
+            continue
+        _save_profile(store, key, current, report, pairing_source=pairing_source)
+
+    return report, pairing_source
+
+
+def _edit_profile(current: RustCredentials) -> None:
+    print(_paint("Enter a replacement value, or press Enter to keep the current value.", GRAY))
+    steam = input(f"> Steam ID [{current.steam_id}]: ").strip()
+    port = input(f"> Rust+ port [{current.port}]: ").strip()
+    token = input(f"> Player token [{current.player_token}] (visible): ").strip()
+    if steam:
+        value = int(steam)
+        if len(str(value)) != 17:
+            raise ValueError("Steam ID must contain 17 digits")
+        current.steam_id = value
+    if port:
+        value = int(port)
+        if not 1 <= value <= 65535:
+            raise ValueError("Rust+ port must be between 1 and 65535")
+        current.port = value
+    if token:
+        value = int(token)
+        if value <= 0:
+            raise ValueError("player token must be positive")
+        current.player_token = value
+
+
+def _validate_profile(
+    store: JsonStore,
+    report: DetectionReport,
+    key: str,
+    current: RustCredentials,
+    pairing_source: str,
+) -> ServerSnapshot:
+    client = RustPlusClient()
+    while True:
+        _status_line(
+            f"VALIDATING RUST+ WEBSOCKET  {current.host}:{current.port}  STEAM={current.steam_id}",
+            CYAN,
+        )
+        try:
+            snapshot = client.fetch_snapshot(current)
+        except Exception as exc:
+            print(_paint(f"[RUST+ VALIDATION FAILED] {exc}", RED, bold=True))
+            print("  [R] Retry the same values")
+            print("  [E] Edit this server profile")
+            print("  [P] Receive/import a new pairing payload")
+            choice = input(_paint("> Select R / E / P: ", AMBER)).strip().casefold()
+            if choice == "r":
+                continue
+            if choice == "e":
+                try:
+                    _edit_profile(current)
+                except (TypeError, ValueError) as edit_error:
+                    print(_paint(f"[INVALID] {edit_error}", RED))
+                    continue
+                _save_profile(store, key, current, report, pairing_source=pairing_source)
+                continue
+            if choice == "p":
+                finder = RustServerFinder(store)
+                source = _listen_for_pairing(current, current.host, finder)
+                if not source:
+                    source = _import_pairing_text(current, current.host)
+                pairing_source = source or pairing_source
+                _save_profile(store, key, current, report, pairing_source=pairing_source)
+                continue
+            print(_paint("Choose R, E, or P.", RED))
+            continue
+
+        print(_paint("[RUST+ VERIFIED] Live server and team authorization succeeded.", GREEN, bold=True))
+        _save_profile(store, key, current, report, pairing_source=pairing_source)
+        store.set("bootstrap_snapshot", snapshot.to_dict())
+        return snapshot
+
+
+def prepare_credentials(store: JsonStore, report: DetectionReport) -> RustCredentials:
+    assert report.selected is not None
+    _print_server_lock(report)
+    key, current = _load_current_profile(store, report)
+    loaded = []
+    if current.steam_id:
+        loaded.append("Steam ID")
+    if current.port:
+        loaded.append("Rust+ port")
+    if current.player_token:
+        loaded.append("player token")
+    if loaded:
+        print(_paint(f"[PROFILE] Loaded for {key}: {', '.join(loaded)}.", GREEN))
+
+    report, source = _collect_missing_fields(store, report, key, current)
+    _validate_profile(store, report, key, current, source)
     return current
-
-
-def _prompt_int(prompt: str) -> int:
-    raw = input(prompt).strip()
-    if not raw:
-        return 0
-    try:
-        return int(raw)
-    except ValueError:
-        print("  Invalid number; leaving it blank.")
-        return 0
-
-
-def _prompt_secret_int(prompt: str) -> int:
-    raw = getpass.getpass(prompt).strip()
-    if not raw:
-        return 0
-    try:
-        return int(raw)
-    except ValueError:
-        print("  Invalid number; leaving it blank.")
-        return 0
 
 
 def launch_gui() -> int:
     from rust_companion_plus.app import RustCompanionApp
 
-    print("\nLaunching Rust Companion+ with the detected server preloaded...\n")
+    print(_paint("\nALL GATES GREEN — launching Rust Companion+ with the verified live profile.\n", GREEN, bold=True))
     app = RustCompanionApp()
     app.mainloop()
     return 0
 
 
-def main() -> int:
+def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data-dir", action="store_true")
+    parser.add_argument("--open-data-folder", action="store_true")
+    parser.add_argument("--reset-integration-setup", action="store_true")
+    return parser.parse_args(argv)
+
+
+def main(argv: list[str] | None = None) -> int:
+    args = _parse_args(argv)
+    if args.data_dir:
+        print(APP_DATA_DIR)
+        return 0
+    if args.open_data_folder:
+        if os.name == "nt":
+            os.startfile(APP_DATA_DIR)  # type: ignore[attr-defined]
+        else:
+            print(APP_DATA_DIR)
+        return 0
+
     print_header()
     store = JsonStore()
+    if args.reset_integration_setup:
+        store.set("launcher_setup_version", 0)
     configure_first_run(store)
-    if store.get("launcher_setup_complete", False):
-        print("Thanks! Waiting for you to join a Rust server...")
     try:
         report = wait_for_server(store)
         prepare_credentials(store, report)
         return launch_gui()
     except KeyboardInterrupt:
-        print("\nLauncher stopped.")
+        print(_paint("\nLauncher stopped. The GUI was not opened.", YELLOW))
         return 130
 
 
 if __name__ == "__main__":
-    raise SystemExit(main())
+    raise SystemExit(main(sys.argv[1:]))

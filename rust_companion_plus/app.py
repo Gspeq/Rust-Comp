@@ -1,27 +1,16 @@
 from __future__ import annotations
 
 import threading
-<<<<<<< Updated upstream
-from dataclasses import dataclass, field
-=======
 import time
 from dataclasses import dataclass, field
 from datetime import datetime
->>>>>>> Stashed changes
 from typing import Any, Callable
 
 import customtkinter as ctk
 
 from rust_companion_plus.models import RustCredentials
-from rust_companion_plus.services.battlemetrics_client import BattleMetricsServer
-from rust_companion_plus.services.live_sync import IntegrationSettings, LiveSyncResult, LiveSyncService
-from rust_companion_plus.services.rustmaps_client import RustMapMetadata
 from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
-<<<<<<< Updated upstream
-from rust_companion_plus.services.server_detection import ServerCandidate, normalize_host
-=======
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
->>>>>>> Stashed changes
 from rust_companion_plus.storage import JsonStore
 from rust_companion_plus.ui.common import ACCENT
 from rust_companion_plus.ui.tabs.dashboard import DashboardTab
@@ -38,42 +27,18 @@ from rust_companion_plus.ui.tabs.tools import ToolsTab
 class AppContext:
     store: JsonStore
     rust: RustPlusClient
-    live_sync: LiveSyncService
     credentials: RustCredentials
-    settings: IntegrationSettings
     snapshot: ServerSnapshot | None = None
     map_image: Any = None
     heatmap_bundle: Any = None
-<<<<<<< Updated upstream
-    detected_server: ServerCandidate | None = None
-    battlemetrics_server: BattleMetricsServer | None = None
-    rustmaps_map: RustMapMetadata | None = None
-    map_cache_dir: Any = None
-    rustplus_connected: bool = False
-    sync_in_progress: bool = False
-    sync_status: str = "Not synced yet"
-    sync_warnings: list[str] = field(default_factory=list)
-    last_synced_at: str = ""
-=======
     detection: dict[str, Any] = field(default_factory=dict)
     timeline: list[dict[str, str]] = field(default_factory=list)
->>>>>>> Stashed changes
     app: "RustCompanionApp | None" = field(default=None, repr=False)
 
     def notify_data_changed(self) -> None:
         if self.app is not None:
             self.app.notify_data_changed()
 
-<<<<<<< Updated upstream
-    def save_credential_profile(self, credentials: RustCredentials, server_id: str = "") -> None:
-        if not credentials.host:
-            return
-        profiles = dict(self.store.get("credential_profiles", {}) or {})
-        profiles[normalize_host(credentials.host)] = credentials.to_dict()
-        if server_id:
-            profiles[str(server_id)] = credentials.to_dict()
-        self.store.set("credential_profiles", profiles)
-=======
     def record_event(self, category: str, message: str, level: str = "info") -> None:
         event = {
             "time": datetime.now().astimezone().isoformat(timespec="seconds"),
@@ -141,7 +106,7 @@ class AppContext:
             self.credentials = RustCredentials(host=host, steam_id=self.credentials.steam_id)
         else:
             self.credentials.host = host
-        app_port = int(report.battlemetrics.get("rust_app_port", 0) or 0)
+        app_port = int(report.rust_app_port or 0)
         if app_port and not self.credentials.port:
             self.credentials.port = app_port
         self.store.set("credentials", self.credentials.to_dict())
@@ -200,7 +165,6 @@ class AppContext:
                     f"{event_names[marker_type]} appeared near x={float(marker.get('x', 0) or 0):.0f}, "
                     f"y={float(marker.get('y', 0) or 0):.0f}.",
                 )
->>>>>>> Stashed changes
 
 
 class RustCompanionApp(ctk.CTk):
@@ -219,23 +183,25 @@ class RustCompanionApp(ctk.CTk):
 
         store = JsonStore()
         credentials = RustCredentials.from_dict(store.get("credentials", {}))
-<<<<<<< Updated upstream
-        settings = IntegrationSettings.from_dict(store.get("integration_settings", {}))
-        rust = RustPlusClient()
-        self.context = AppContext(
-            store=store,
-            rust=rust,
-            live_sync=LiveSyncService(rustplus=rust),
-            credentials=credentials,
-            settings=settings,
-=======
+        bootstrap_snapshot = None
+        raw_snapshot = store.get("bootstrap_snapshot", {}) or {}
+        if isinstance(raw_snapshot, dict) and raw_snapshot.get("server") is not None:
+            try:
+                bootstrap_snapshot = ServerSnapshot(
+                    server=dict(raw_snapshot.get("server") or {}),
+                    team=list(raw_snapshot.get("team") or []),
+                    markers=list(raw_snapshot.get("markers") or []),
+                    server_time=str(raw_snapshot.get("server_time") or ""),
+                )
+            except (TypeError, ValueError):
+                bootstrap_snapshot = None
         self.context = AppContext(
             store,
             RustPlusClient(),
             credentials,
+            snapshot=bootstrap_snapshot,
             detection=dict(store.get("server_detection", {}) or {}),
             timeline=list(store.get("server_timeline", []) or []),
->>>>>>> Stashed changes
         )
         self.context.app = self
         self.finder = RustServerFinder(store)
@@ -302,12 +268,8 @@ class RustCompanionApp(ctk.CTk):
 
         self.current_tab = ""
         self.show_tab("Overview")
-<<<<<<< Updated upstream
-        self.after(1800, self._auto_sync_tick)
-=======
         self.after(500, self.refresh_detection_now)
         self.after(1_500, self.refresh_rustplus_now)
->>>>>>> Stashed changes
 
     def show_tab(self, name: str) -> None:
         if self.current_tab:
@@ -318,101 +280,7 @@ class RustCompanionApp(ctk.CTk):
         if callable(refresh):
             refresh()
 
-    def _auto_sync_tick(self) -> None:
-        if self.context.settings.auto_sync_enabled:
-            self.run_live_sync(manual=False)
-        interval_ms = max(30, self.context.settings.sync_interval_seconds) * 1000
-        self.after(interval_ms, self._auto_sync_tick)
-
-    def run_live_sync(
-        self,
-        *,
-        manual: bool = False,
-        on_complete: Callable[[LiveSyncResult], None] | None = None,
-    ) -> None:
-        if self.context.sync_in_progress:
-            return
-        self.context.sync_in_progress = True
-        self.context.sync_status = "Detecting active Rust server…"
-        self.notify_data_changed()
-
-        credentials = self.context.credentials
-        settings = self.context.settings
-        profiles = dict(self.context.store.get("credential_profiles", {}) or {})
-
-        def target() -> None:
-            try:
-                result = self.context.live_sync.refresh(
-                    credentials,
-                    settings,
-                    credential_profiles=profiles,
-                )
-            except Exception as exc:
-                self.after(0, lambda: self._sync_failed(exc, manual))
-            else:
-                self.after(0, lambda: self._sync_succeeded(result, on_complete))
-
-        threading.Thread(target=target, daemon=True).start()
-
-    def _sync_succeeded(
-        self,
-        result: LiveSyncResult,
-        on_complete: Callable[[LiveSyncResult], None] | None,
-    ) -> None:
-        context = self.context
-        context.sync_in_progress = False
-        context.detected_server = result.detected
-        context.battlemetrics_server = result.battlemetrics_server
-        context.rustmaps_map = result.rustmaps_map
-        context.credentials = result.credentials
-        context.snapshot = result.snapshot
-        context.rustplus_connected = result.rustplus_connected
-        context.sync_warnings = result.warnings
-        context.last_synced_at = result.synced_at
-        context.sync_status = result.summary
-        if result.map_image is not None:
-            context.map_image = result.map_image
-        if result.heatmap_bundle is not None:
-            context.heatmap_bundle = result.heatmap_bundle
-        if result.map_cache_dir is not None:
-            context.map_cache_dir = result.map_cache_dir
-            parsed_dir = result.map_cache_dir / "parsed"
-            if parsed_dir.exists():
-                context.store.set("heatmap_source_dir", str(parsed_dir))
-        context.store.set("credentials", result.credentials.to_dict())
-        server_id = result.battlemetrics_server.server_id if result.battlemetrics_server else ""
-        if result.credentials.is_complete():
-            context.save_credential_profile(result.credentials, server_id)
-        context.notify_data_changed()
-        if on_complete:
-            on_complete(result)
-
-    def _sync_failed(self, exc: Exception, manual: bool) -> None:
-        self.context.sync_in_progress = False
-        self.context.sync_status = f"Sync failed: {exc}"
-        self.context.sync_warnings = [str(exc)]
-        self.context.notify_data_changed()
-        if manual:
-            from tkinter import messagebox
-
-            messagebox.showerror("Live server sync failed", str(exc))
-
     def notify_data_changed(self) -> None:
-<<<<<<< Updated upstream
-        context = self.context
-        if context.sync_in_progress:
-            text = "● Syncing"
-            color = ("#92400e", "#fbbf24")
-        elif context.rustplus_connected:
-            text = "● Rust+ live"
-            color = ("#166534", "#4ade80")
-        elif context.snapshot is not None:
-            text = "● Server found"
-            color = ("#1d4ed8", "#60a5fa")
-        else:
-            text = "● Offline"
-            color = ("#991b1b", "#f87171")
-=======
         online = self.context.snapshot is not None
         detected = bool((self.context.detection.get("selected") or {}).get("endpoint"))
         if online:
@@ -421,20 +289,11 @@ class RustCompanionApp(ctk.CTk):
             text, color = "● Server Detected", ("#92400e", "#fbbf24")
         else:
             text, color = "● Offline", ("#991b1b", "#f87171")
->>>>>>> Stashed changes
         self.connection_badge.configure(text=text, text_color=color)
         for tab in self.tabs.values():
             callback = getattr(tab, "on_context_updated", None)
             if callable(callback):
                 callback()
-<<<<<<< Updated upstream
-        map_tab = self.tabs.get("Map")
-        if map_tab is not None:
-            for method_name in ("refresh_resource_counts", "refresh_hotspots"):
-                method = getattr(map_tab, method_name, None)
-                if callable(method):
-                    method()
-=======
 
     def _background(
         self,
@@ -472,14 +331,25 @@ class RustCompanionApp(ctk.CTk):
         previous_endpoint = (self.context.detection.get("selected") or {}).get("endpoint")
 
         def work() -> DetectionReport:
-            report = self.finder.detect_once(enrich=False)
+            session = self.finder.get_rust_process_session()
+            report = self.finder.detect_once(
+                enrich=False,
+                require_running_process=True,
+                session_started_at=session.started_at_epoch if session.running else None,
+                current_session_only=True,
+            )
             selected_endpoint = report.selected.endpoint if report.selected else ""
             enrichment_due = (
                 time.monotonic() - self._last_battlemetrics_refresh
                 >= self.BATTLEMETRICS_INTERVAL_SECONDS
             )
             if report.selected and (selected_endpoint != previous_endpoint or enrichment_due):
-                report = self.finder.detect_once(enrich=True)
+                report = self.finder.detect_once(
+                    enrich=True,
+                    require_running_process=True,
+                    session_started_at=session.started_at_epoch,
+                    current_session_only=True,
+                )
                 self._last_battlemetrics_refresh = time.monotonic()
             return report
 
@@ -510,4 +380,3 @@ class RustCompanionApp(ctk.CTk):
             success,
             failure,
         )
->>>>>>> Stashed changes

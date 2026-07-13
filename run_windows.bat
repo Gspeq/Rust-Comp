@@ -8,7 +8,7 @@ set "PYTHON_CMD="
 where py >nul 2>nul && set "PYTHON_CMD=py"
 if not defined PYTHON_CMD where python >nul 2>nul && set "PYTHON_CMD=python"
 if not defined PYTHON_CMD (
-    echo Python 3.11 or 3.12 was not found.
+    echo Python 3.11 or newer was not found.
     echo Install Python from python.org and enable "Add Python to PATH".
     pause
     exit /b 1

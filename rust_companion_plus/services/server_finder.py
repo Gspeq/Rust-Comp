@@ -6,6 +6,7 @@ import os
 import re
 import urllib.error
 import socket
+import struct
 import urllib.parse
 import urllib.request
 from dataclasses import asdict, dataclass, field
@@ -38,6 +39,19 @@ DISCONNECT_RE = re.compile(
 )
 MAP_URL_RE = re.compile(r"https://maps\.rustmaps\.com/[^\s\"']+\.map", re.IGNORECASE)
 WELCOME_RE = re.compile(r"Welcome to.*?(?:</size>|$)", re.IGNORECASE)
+APP_PORT_RE = re.compile(
+    r"(?im)(?:(?P<timestamp>\d{4}-\d{2}-\d{2}T[^|\s]+)\|[^\r\n]*\|[^\r\n]*?)?"
+    r"(?:\bapp\.port\b|\brust_app_port\b|\brustappport\b|"
+    r"\bcompanion(?:/app)?[ _.-]*port\b)\s*(?:[:=]|\bis\b)?\s*(?P<port>\d{1,5})"
+)
+APP_PORT_KEYS = (
+    "rust_app_port",
+    "rustappport",
+    "app_port",
+    "app.port",
+    "companion_port",
+    "companionport",
+)
 
 
 @dataclass(slots=True)
@@ -69,6 +83,9 @@ class DetectionReport:
     debug: list[str] = field(default_factory=list)
     log_path: str = ""
     battlemetrics: dict[str, Any] = field(default_factory=dict)
+    rust_app_port: int = 0
+    rust_app_port_source: str = ""
+    a2s_rules: dict[str, str] = field(default_factory=dict)
     warnings: list[str] = field(default_factory=list)
 
     def to_dict(self) -> dict[str, Any]:
@@ -80,8 +97,20 @@ class DetectionReport:
             "debug": self.debug,
             "log_path": self.log_path,
             "battlemetrics": self.battlemetrics,
+            "rust_app_port": self.rust_app_port,
+            "rust_app_port_source": self.rust_app_port_source,
+            "a2s_rules": self.a2s_rules,
             "warnings": self.warnings,
         }
+
+
+@dataclass(slots=True)
+class RustProcessSession:
+    running: bool
+    pids: list[int] = field(default_factory=list)
+    started_at_epoch: float = 0.0
+    started_at: str = ""
+    debug: list[str] = field(default_factory=list)
 
 
 class RustServerFinder:
@@ -100,16 +129,48 @@ class RustServerFinder:
         self.store = store
         self.max_log_bytes = max_log_bytes
 
-    def detect_once(self, *, enrich: bool = True) -> DetectionReport:
+    def detect_once(
+        self,
+        *,
+        enrich: bool = True,
+        require_running_process: bool = False,
+        session_started_at: float | None = None,
+        current_session_only: bool = False,
+    ) -> DetectionReport:
         report = DetectionReport(scanned_at=_now_iso())
         candidates: list[ServerCandidate] = []
 
-        manual = self._manual_candidate()
-        if manual is not None:
-            candidates.append(manual)
-            report.debug.append(f"manual override accepted as candidate: {manual.endpoint}")
+        process_session: RustProcessSession | None = None
+        if require_running_process:
+            process_session = self.get_rust_process_session()
+            report.debug.extend(process_session.debug)
+            if not process_session.running:
+                report.debug.append(
+                    "current-session gate: RustClient.exe is not running; saved log connections were suppressed"
+                )
+                report.debug.append("no usable active Rust server endpoint found")
+                if self.store is not None:
+                    self.store.set("server_detection", report.to_dict())
+                    self.store.set("detected_server", {})
+                return report
+            if session_started_at is None:
+                session_started_at = process_session.started_at_epoch
+            report.debug.append(
+                f"current-session gate: Rust is running as PID(s) {', '.join(str(pid) for pid in process_session.pids)}; "
+                f"accepting log events from {process_session.started_at or 'the current process session'} onward"
+            )
 
-        log_candidates, log_path, log_debug = self._scan_rust_logs()
+        if not current_session_only:
+            manual = self._manual_candidate()
+            if manual is not None:
+                candidates.append(manual)
+                report.debug.append(f"manual override accepted as candidate: {manual.endpoint}")
+        else:
+            report.debug.append("current-session gate: manual overrides are diagnostics-only during launcher auto-detection")
+
+        log_candidates, log_path, log_debug = self._scan_rust_logs(
+            not_before_epoch=session_started_at if current_session_only else None
+        )
         candidates.extend(log_candidates)
         report.log_path = str(log_path) if log_path else ""
         report.debug.extend(log_debug)
@@ -162,6 +223,7 @@ class RustServerFinder:
             )
             if enrich:
                 self._enrich_with_battlemetrics(report)
+                self._resolve_rust_app_port(report)
             else:
                 self._reuse_cached_enrichment(report)
         else:
@@ -171,6 +233,8 @@ class RustServerFinder:
             self.store.set("server_detection", report.to_dict())
             if report.selected:
                 self.store.set("detected_server", self._detected_server_payload(report))
+            elif require_running_process:
+                self.store.set("detected_server", {})
         return report
 
     def _manual_candidate(self) -> ServerCandidate | None:
@@ -190,7 +254,9 @@ class RustServerFinder:
             evidence="saved manual server endpoint",
         )
 
-    def _scan_rust_logs(self) -> tuple[list[ServerCandidate], Path | None, list[str]]:
+    def _scan_rust_logs(
+        self, *, not_before_epoch: float | None = None
+    ) -> tuple[list[ServerCandidate], Path | None, list[str]]:
         debug: list[str] = []
         available = [path for path in self.discover_log_paths() if path.is_file()]
         if not available:
@@ -204,13 +270,17 @@ class RustServerFinder:
                 f"Rust log scan: {path} ({len(text):,} decoded characters, "
                 f"modified {datetime.fromtimestamp(path.stat().st_mtime).astimezone().isoformat(timespec='seconds')})"
             )
-            candidates, parse_debug = self._parse_log_text(text, path)
+            candidates, parse_debug = self._parse_log_text(
+                text, path, not_before_epoch=not_before_epoch
+            )
             debug.extend(parse_debug)
             if candidates:
                 return candidates, path, debug
         return [], available[0], debug
 
-    def _parse_log_text(self, text: str, path: Path) -> tuple[list[ServerCandidate], list[str]]:
+    def _parse_log_text(
+        self, text: str, path: Path, *, not_before_epoch: float | None = None
+    ) -> tuple[list[ServerCandidate], list[str]]:
         debug: list[str] = []
         disconnects = list(DISCONNECT_RE.finditer(text))
         last_disconnect_position = disconnects[-1].start() if disconnects else -1
@@ -249,8 +319,38 @@ class RustServerFinder:
                     )
                 )
 
+        total_matches = len(matches)
+        if not_before_epoch is not None and matches:
+            # Rust log timestamps are UTC. A small tolerance allows the process and
+            # first log line to be recorded in either order during startup.
+            threshold = max(0.0, float(not_before_epoch) - 15.0)
+            current_session_matches: list[tuple[int, ServerCandidate]] = []
+            for position, candidate in matches:
+                observed_epoch = _timestamp_sort_value(candidate.observed_at)
+                if not observed_epoch:
+                    debug.append(
+                        f"Rust log parser: rejected {candidate.endpoint} because its timestamp "
+                        "could not be tied to the current Rust process session"
+                    )
+                    continue
+                if observed_epoch < threshold:
+                    debug.append(
+                        f"Rust log parser: rejected stale previous-session connection "
+                        f"{candidate.endpoint} at {candidate.observed_at}"
+                    )
+                    continue
+                current_session_matches.append((position, candidate))
+            matches = current_session_matches
+            debug.append(
+                f"Rust log parser: {len(matches)}/{total_matches} connection line(s) belong to "
+                "the current Rust process session"
+            )
+
         if not matches:
-            debug.append("Rust log parser: no explicit connection line found")
+            if not_before_epoch is not None and total_matches:
+                debug.append("Rust log parser: no current-session connection line found yet")
+            else:
+                debug.append("Rust log parser: no explicit connection line found")
             return [], debug
 
         matches.sort(key=lambda pair: pair[0])
@@ -264,6 +364,26 @@ class RustServerFinder:
                 "Rust log parser: that connection is stale because a later disconnect marker exists"
             )
             return [], debug
+
+        app_port_matches = list(APP_PORT_RE.finditer(text))
+        if app_port_matches:
+            threshold = max(0.0, float(not_before_epoch or 0.0) - 15.0)
+            usable_ports: list[tuple[int, int, str]] = []
+            for port_match in app_port_matches:
+                port = _coerce_int(port_match.groupdict().get("port"))
+                timestamp = port_match.groupdict().get("timestamp", "") or ""
+                observed_epoch = _timestamp_sort_value(timestamp)
+                if not 1 <= port <= 65535:
+                    continue
+                if not_before_epoch is not None and timestamp and observed_epoch < threshold:
+                    continue
+                usable_ports.append((port_match.start(), port, timestamp))
+            if usable_ports:
+                _, app_port, app_timestamp = usable_ports[-1]
+                latest.metadata["rust_app_port"] = app_port
+                latest.metadata["rust_app_port_source"] = "rust_log"
+                latest.metadata["rust_app_port_observed_at"] = app_timestamp
+                debug.append(f"Rust log parser: companion port {app_port} found in the current log session")
 
         # Only the latest active explicit connection is selectable. Older matches remain
         # visible in the debug count but cannot beat the active line.
@@ -347,6 +467,61 @@ class RustServerFinder:
             for library in libraries:
                 results.append(library / "steamapps" / "common" / "Rust" / "output_log.txt")
         return results
+
+    def get_rust_process_session(self) -> RustProcessSession:
+        """Return the active Rust client session without consulting stale log files."""
+        try:
+            import psutil  # type: ignore
+        except ImportError:
+            return RustProcessSession(
+                running=False,
+                debug=["Rust process gate unavailable: psutil is not installed"],
+            )
+
+        rows: list[tuple[int, str, float]] = []
+        debug: list[str] = []
+        try:
+            for process in psutil.process_iter(["pid", "name", "exe", "create_time"]):
+                name = str(process.info.get("name") or "").casefold()
+                if name not in {"rustclient.exe", "rust.exe"}:
+                    continue
+                try:
+                    created = float(process.info.get("create_time") or process.create_time())
+                except Exception:
+                    created = 0.0
+                rows.append((int(process.pid), name, created))
+        except Exception as exc:
+            return RustProcessSession(
+                running=False,
+                debug=[f"Rust process gate failed while enumerating processes: {exc}"],
+            )
+
+        if not rows:
+            return RustProcessSession(
+                running=False,
+                debug=["Rust process gate: RustClient.exe is not running"],
+            )
+
+        primary = [row for row in rows if row[1] == "rustclient.exe"] or rows
+        valid_start_times = [row[2] for row in primary if row[2] > 0]
+        started_at_epoch = min(valid_start_times) if valid_start_times else 0.0
+        started_at = ""
+        if started_at_epoch:
+            started_at = datetime.fromtimestamp(
+                started_at_epoch, timezone.utc
+            ).isoformat(timespec="seconds")
+        pids = sorted(row[0] for row in primary)
+        debug.append(
+            f"Rust process gate: live Rust session found; PID(s) {', '.join(str(pid) for pid in pids)}; "
+            f"started {started_at or 'at an unknown time'}"
+        )
+        return RustProcessSession(
+            running=True,
+            pids=pids,
+            started_at_epoch=started_at_epoch,
+            started_at=started_at,
+            debug=debug,
+        )
 
     def _scan_rust_process_connections(self) -> tuple[list[ServerCandidate], list[str]]:
         debug: list[str] = []
@@ -442,7 +617,10 @@ class RustServerFinder:
         if cached:
             report.battlemetrics = dict(cached)
             report.warnings = list(previous.get("warnings") or [])
-            report.debug.append("reused cached BattleMetrics enrichment for the unchanged endpoint")
+            report.rust_app_port = _coerce_int(previous.get("rust_app_port"))
+            report.rust_app_port_source = str(previous.get("rust_app_port_source") or "")
+            report.a2s_rules = dict(previous.get("a2s_rules") or {})
+            report.debug.append("reused cached BattleMetrics/Rust+ enrichment for the unchanged endpoint")
 
     def _enrich_with_battlemetrics(self, report: DetectionReport) -> None:
         selected = report.selected
@@ -523,8 +701,73 @@ class RustServerFinder:
         )
         if app_port:
             report.debug.append(f"BattleMetrics published Rust+ companion port {app_port}")
-        else:
-            report.warnings.append("Rust+ companion port was not published; it cannot be guessed from the game port.")
+
+    def _resolve_rust_app_port(self, report: DetectionReport) -> None:
+        selected = report.selected
+        if selected is None:
+            return
+
+        log_port = _coerce_int(selected.metadata.get("rust_app_port"))
+        if log_port:
+            report.rust_app_port = log_port
+            report.rust_app_port_source = str(
+                selected.metadata.get("rust_app_port_source") or "rust_log"
+            )
+            report.debug.append(
+                f"Rust+ companion port {log_port} accepted from {report.rust_app_port_source}"
+            )
+            return
+
+        battlemetrics_port = _coerce_int(report.battlemetrics.get("rust_app_port"))
+        if battlemetrics_port:
+            report.rust_app_port = battlemetrics_port
+            report.rust_app_port_source = "battlemetrics_exact_match"
+            report.debug.append(
+                f"Rust+ companion port {battlemetrics_port} accepted from the exact BattleMetrics server record"
+            )
+            return
+
+        query_ports: list[int] = []
+        for value in (
+            report.battlemetrics.get("query_port"),
+            report.battlemetrics.get("port"),
+            selected.metadata.get("query_port"),
+            selected.port,
+        ):
+            port = _coerce_int(value)
+            if 1 <= port <= 65535 and port not in query_ports:
+                query_ports.append(port)
+
+        for query_port in query_ports:
+            try:
+                rules = _query_a2s_rules(selected.host, query_port)
+            except (OSError, ValueError) as exc:
+                report.debug.append(
+                    f"A2S rules query failed for {selected.host}:{query_port}: {exc}"
+                )
+                continue
+            if not rules:
+                report.debug.append(
+                    f"A2S rules query returned no rules for {selected.host}:{query_port}"
+                )
+                continue
+            report.a2s_rules = rules
+            app_port = _find_int_by_key(rules, APP_PORT_KEYS)
+            if app_port:
+                report.rust_app_port = app_port
+                report.rust_app_port_source = f"a2s_rules:{query_port}"
+                report.debug.append(
+                    f"Rust+ companion port {app_port} discovered through A2S_RULES on query port {query_port}"
+                )
+                return
+            report.debug.append(
+                f"A2S rules were readable on {query_port}, but no Rust+ app-port rule was published"
+            )
+
+        report.warnings.append(
+            "Rust+ companion port was not published in the current log, exact BattleMetrics record, "
+            "or A2S server rules. The launcher will request pairing data or a manual port before opening the GUI."
+        )
 
     def _detected_server_payload(self, report: DetectionReport) -> dict[str, Any]:
         assert report.selected is not None
@@ -541,9 +784,98 @@ class RustServerFinder:
             "log_path": report.log_path,
             "map_url": selected.metadata.get("map_url", ""),
             "battlemetrics": battlemetrics,
-            "rust_app_port": _coerce_int(battlemetrics.get("rust_app_port")),
+            "rust_app_port": report.rust_app_port,
+            "rust_app_port_source": report.rust_app_port_source,
+            "a2s_rules": report.a2s_rules,
             "warnings": report.warnings,
         }
+
+
+def _query_a2s_rules(host: str, port: int, *, timeout: float = 1.75) -> dict[str, str]:
+    """Read Source A2S_RULES without scanning or guessing arbitrary ports."""
+    if not host or not 1 <= int(port) <= 65535:
+        raise ValueError("invalid A2S host or port")
+
+    last_error: OSError | None = None
+    addresses = socket.getaddrinfo(host, int(port), type=socket.SOCK_DGRAM)
+    for family, socktype, protocol, _, address in addresses:
+        try:
+            with socket.socket(family, socktype, protocol) as client:
+                client.settimeout(timeout)
+                client.sendto(b"\xff\xff\xff\xffV\xff\xff\xff\xff", address)
+                response = _receive_a2s_payload(client)
+                if len(response) >= 9 and response[:5] == b"\xff\xff\xff\xffA":
+                    challenge = response[5:9]
+                    client.sendto(b"\xff\xff\xff\xffV" + challenge, address)
+                    response = _receive_a2s_payload(client)
+                return _parse_a2s_rules(response)
+        except OSError as exc:
+            last_error = exc
+            continue
+    if last_error is not None:
+        raise last_error
+    return {}
+
+
+def _receive_a2s_payload(client: socket.socket) -> bytes:
+    first, _ = client.recvfrom(65535)
+    if first.startswith(b"\xff\xff\xff\xff"):
+        return first
+    if not first.startswith(b"\xfe\xff\xff\xff") or len(first) < 10:
+        return first
+
+    request_id = struct.unpack_from("<I", first, 4)[0]
+    if request_id & 0x80000000:
+        raise OSError("compressed split A2S responses are not supported")
+    total = first[8]
+    number = first[9]
+    if not total or number >= total:
+        raise OSError("invalid split A2S response header")
+    offset = 12 if len(first) >= 12 else 10
+    parts: dict[int, bytes] = {number: first[offset:]}
+
+    while len(parts) < total:
+        packet, _ = client.recvfrom(65535)
+        if not packet.startswith(b"\xfe\xff\xff\xff") or len(packet) < 10:
+            continue
+        packet_id = struct.unpack_from("<I", packet, 4)[0]
+        if packet_id != request_id:
+            continue
+        packet_total = packet[8]
+        packet_number = packet[9]
+        if packet_total != total or packet_number >= total:
+            continue
+        packet_offset = 12 if len(packet) >= 12 else 10
+        parts[packet_number] = packet[packet_offset:]
+    return b"".join(parts[index] for index in range(total))
+
+
+def _parse_a2s_rules(payload: bytes) -> dict[str, str]:
+    if len(payload) < 7 or payload[:5] != b"\xff\xff\xff\xffE":
+        return {}
+    count = struct.unpack_from("<H", payload, 5)[0]
+    position = 7
+    rules: dict[str, str] = {}
+    for _ in range(count):
+        key, position = _read_cstring(payload, position)
+        value, position = _read_cstring(payload, position)
+        if key:
+            rules[key] = value
+        if position >= len(payload):
+            break
+    return rules
+
+
+def _read_cstring(payload: bytes, position: int) -> tuple[str, int]:
+    if position >= len(payload):
+        return "", len(payload)
+    end = payload.find(b"\x00", position)
+    if end < 0:
+        end = len(payload)
+        next_position = len(payload)
+    else:
+        next_position = end + 1
+    return payload[position:end].decode("utf-8", errors="replace"), next_position
 
 
 def _read_tail(path: Path, maximum_bytes: int) -> str:

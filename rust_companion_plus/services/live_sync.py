@@ -18,7 +18,8 @@ from rust_companion_plus.services.resource_heatmaps import (
     parse_local_map,
 )
 from rust_companion_plus.services.rustmaps_client import RustMapMetadata, RustMapsClient
-from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
+from rust_companion_plus.services import rustplus_client as rustplus_client_module
+from rust_companion_plus.services.rustplus_client import RustPlusClient
 from rust_companion_plus.services.server_detection import (
     ServerCandidate,
     ServerDetectionError,
@@ -65,7 +66,7 @@ class LiveSyncResult:
     battlemetrics_server: BattleMetricsServer | None = None
     rustmaps_map: RustMapMetadata | None = None
     credentials: RustCredentials = field(default_factory=RustCredentials)
-    snapshot: ServerSnapshot | None = None
+    snapshot: rustplus_client_module.ServerSnapshot | None = None
     rustplus_connected: bool = False
     map_image: Image.Image | None = None
     heatmap_bundle: ResourceHeatmapBundle | None = None
@@ -81,7 +82,7 @@ class LiveSyncResult:
         elif self.snapshot:
             server_name = str(self.snapshot.server.get("name") or "Detected server")
         source = self.detected.source if self.detected else "manual profile"
-        suffix = f" · {len(self.warnings)} warning(s)" if self.warnings else ""
+        suffix = f" Â· {len(self.warnings)} warning(s)" if self.warnings else ""
         return f"Synced {server_name} via {source}{suffix}"
 
 
@@ -198,7 +199,7 @@ class LiveSyncService:
             warnings=warnings,
         )
 
-        rust_snapshot: ServerSnapshot | None = None
+        rust_snapshot: rustplus_client_module.ServerSnapshot | None = None
         if selected_credentials.is_complete():
             try:
                 rust_snapshot = self.rustplus.fetch_snapshot(selected_credentials)
@@ -211,7 +212,7 @@ class LiveSyncService:
             )
 
         if rust_snapshot is None and bm_server is not None:
-            rust_snapshot = ServerSnapshot(bm_server.to_server_dict(), [], [], "")
+            rust_snapshot = rustplus_client_module.ServerSnapshot(bm_server.to_server_dict(), [], [], "")
         elif rust_snapshot is not None and bm_server is not None:
             merged = bm_server.to_server_dict()
             merged.update({key: value for key, value in rust_snapshot.server.items() if value not in (None, "", 0)})

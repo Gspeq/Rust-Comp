@@ -11,17 +11,17 @@ from rust_companion_plus.config import STORE_PATH
 DEFAULT_STORE: dict[str, Any] = {
     "credentials": {},
     "credential_profiles": {},
-<<<<<<< Updated upstream
-    "integration_settings": {},
-=======
+    "credential_profile_metadata": {},
+    "player_identity": {},
+    "bootstrap_snapshot": {},
     "api_keys": {},
     "launcher_setup_complete": False,
+    "launcher_setup_version": 0,
     "manual_server_endpoint": "",
     "rust_log_path": "",
     "detected_server": {},
     "server_detection": {},
     "server_timeline": [],
->>>>>>> Stashed changes
     "electrical_setups": [],
     "threats": [],
     "resource_overlays": [],

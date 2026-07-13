@@ -25,3 +25,5 @@ def application_data_dir() -> Path:
 
 APP_DATA_DIR = application_data_dir()
 STORE_PATH = APP_DATA_DIR / "store.json"
+
+FCM_CONFIG_PATH = APP_DATA_DIR / "rustplus_fcm.json"

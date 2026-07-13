@@ -1,91 +1,51 @@
 # Rust Companion+
 
-A legitimate, desktop-first information and planning companion for the PC version of Rust.
-
 **Developed by Taylor Marshall**
 
-## What is implemented
+Rust Companion+ is a desktop information and planning companion for the PC version of Rust. This final-gate update makes the launcher the single entry point for both source and EXE runs.
 
-- Modern dark CustomTkinter interface
-<<<<<<< Updated upstream
-- Automatic current-server detection on Windows using:
-  - Rust process command-line and network information when available
-  - Rust `Player.log` connection records
-  - Steam server-history fallback
-  - Saved Rust+ profiles as a final fallback
-- Automatic refresh pipeline that switches server data, IP, map, wipe information, shops, events, and team data when possible
-- BattleMetrics integration:
-  - Public server matching and status
-  - Population, queue, rank, country, endpoint, map seed/size, description, and wipe metadata
-  - Optional authenticated current-player data when the supplied token has permission
-- RustMaps v4 integration:
-  - Map lookup by live seed and world size
-  - Optional procedural-map generation
-  - Automatic map/thumbnail metadata and monument/terrain statistics
-  - Cached map images
-  - Optional `.map` download where the account/map permits it
-- Automatic map parser pipeline:
-  - Detects a compatible `MapParser.exe`
-  - Downloads and parses the newly detected server map when RustMaps permits download
-  - Reloads resource points/masks and heatmap overlays automatically
-  - Keeps manual import and RustPlusDesk cache detection as fallbacks
-- Rust+ credentials and per-server profile selection
-=======
-- Guided Windows `.bat` launcher and optional PyInstaller `.exe` build
-- First-run integration-key setup stored in the local application-data folder
-- Automatic server detection that prioritizes Rust's own `Connecting: ... (Raknet)` log line
-- Loopback/helper-socket rejection so `127.0.0.1` cannot become the selected server
-- Exact-match BattleMetrics enrichment that cannot replace the detected endpoint with a different IP
-- Persistent terminal-style Server Intelligence trace
-- Timestamped live server/team timeline with population, teammate-state and world-event changes
-- Rust+ credentials and per-server pairing profiles
->>>>>>> Stashed changes
-- Server overview, team list, events, map retrieval, vending marker search
-- Strong electrical planner:
-  - Free-text goal parsing
-  - Structured placed/planned/inventory component list
-  - Peak and estimated average generation
-  - Load, battery capacity, output-limit and runtime calculations
-  - Practical rule-based optimization suggestions
-  - Saved version snapshots and comparison
-- Manual threat/death log with repeat-offender counts
-- TC upkeep timer
-- Building cost calculator
-- Recycle calculator with an editable starter catalog
-- Farm power/water calculator
-- Plant genetics ranking and three-parent crossover heuristic
-- Loot value tracker
-- Smart-device entity status/control
-- Persistent notes
+## Final launch behavior
 
-<<<<<<< Updated upstream
-## How automatic server sync works
+`run_windows.bat`, `launcher.py`, `main.py`, and the compiled EXE all follow the same sequence:
 
-1. The app looks for a running Rust client and recent connection information.
-2. It tests the strongest endpoint candidates against BattleMetrics and selects the best exact Rust-server match.
-3. It switches to a saved Rust+ pairing profile for that server when one exists.
-4. Rust+ refreshes team, map markers, vending machines, events, and smart-device access.
-5. BattleMetrics enriches the snapshot with public population, rank, endpoint, wipe, and map details.
-6. When seed and size are known, RustMaps retrieves the matching generated map and terrain/monument metadata.
-7. If RustMaps permits `.map` download and `MapParser.exe` is available, the app downloads, parses, caches, and reloads the resource heatmaps.
+1. Load global BattleMetrics and RustMaps keys from the persistent AppData vault.
+2. Wait until `RustClient.exe` is actually running.
+3. Reject connection lines from older Rust sessions.
+4. Wait until the current Rust session joins a server.
+5. Identify the exact game endpoint.
+6. Try to discover the Rust+ companion port from:
+   - the current Rust log,
+   - the exact BattleMetrics server record,
+   - Source A2S server rules,
+   - a fresh Rust+ pairing notification or imported pairing payload.
+7. Load the exact saved profile for `game IP:game port`.
+8. Ask only for server-specific values that are still missing.
+9. Validate the Rust+ WebSocket using the detected host, companion port, Steam ID, and player token.
+10. Open the main GUI only after validation succeeds.
 
-Automatic detection cannot manufacture a Rust+ player token. Pair each server once and save its profile; afterward the app can select that profile automatically. BattleMetrics and RustMaps can still update when no matching Rust+ token exists.
+The player token and Rust+ port are never reused across unrelated game-server profiles. The Steam ID is treated as account-wide.
 
-## Map parser and heatmap accuracy
+## Persistent data
 
-A map parser reads the Rust `.map` world file and exports structured prefab/location data. Rust Companion+ imports recognized ore, junk-pile, and animal prefab positions into heatmap masks.
+Source runs and the compiled EXE use the same application-data directory. It stores:
 
-These layers represent procedural spawn definitions or parsed map content—not guaranteed live ore nodes. Players can harvest nodes, servers can alter spawn rules, and plugins can change the world. The app therefore labels and treats them as planning heatmaps rather than a live radar.
+- BattleMetrics and RustMaps keys
+- Per-server Rust+ profiles
+- Global Steam identity
+- Optional FCM pairing-receiver configuration
+- Detection diagnostics and bootstrap snapshot
+- Notes, planners, timelines, and other application saves
 
-Exact automatic parsing requires all of the following:
+Run either of these to print or open the exact save location:
 
-- RustMaps API access
-- A map/account for which `canDownload` is true
-- A compatible `MapParser.exe`
+```powershell
+.\RustCompanionPlus.exe --data-dir
+.\RustCompanionPlus.exe --open-data-folder
+```
 
-Without those, the app still displays the live Rust+ map or RustMaps image and supports imported parser folders/manual heatmap notes.
-=======
-## Recommended Windows launch
+The save file deliberately remains outside the EXE so upgrades do not erase it.
+
+## Run from source
 
 Double-click:
 
@@ -93,165 +53,61 @@ Double-click:
 run_windows.bat
 ```
 
-The launcher:
+The script creates `.venv`, installs required packages, and starts the gated launcher.
 
-1. Finds Python.
-2. Creates `.venv` on the first run.
-3. Installs or updates required packages.
-4. Shows the Rust Companion+ ASCII banner.
-5. Collects optional integration keys once.
-6. Prints `Thanks! Waiting for you to join a Rust server...`.
-7. Watches Rust's log until an active server is detected.
-8. Loads the matching saved Rust+ profile or asks for missing pairing values.
-9. Opens the GUI with the detected server already selected.
+## Pairing when the server does not publish its Rust+ port
 
-## Server-detection evidence order
+The launcher offers four choices when a server profile is incomplete:
 
-1. Saved manual override.
-2. Rust `output_log.txt` line: `Connecting: IP:PORT (Raknet)`.
-3. Explicit `client.connect` log line.
-4. RustClient.exe **remote** UDP socket fallback.
+- **A** — listen for a fresh Rust+ pairing notification using a saved/imported `rustplus.py.config.json`
+- **P** — paste a pairing JSON notification or provide its JSON file path
+- **R** — retry current-log, BattleMetrics, and A2S discovery
+- **M** — enter only the missing values manually
 
-Listening/local endpoints are never treated as remote servers. A candidate such as `127.0.0.1:32225` is rejected as a helper socket. BattleMetrics data is accepted only when its IP and game/query port exactly match the selected endpoint.
+A pairing payload is expected to contain fields equivalent to:
 
-The Rust+ companion/app port is separate from the game port. If a server does not publish it, the app leaves it blank rather than guessing.
-
-## Project structure
-
-```text
-Rust-Comp/
-├─ main.py
-├─ launcher.py
-├─ requirements.txt
-├─ requirements-core.txt
-├─ run_windows.bat
-├─ build_windows_exe.bat
-├─ rust_companion_plus/
-│  ├─ app.py
-│  ├─ bootstrap.py
-│  ├─ catalog.py
-│  ├─ config.py
-│  ├─ models.py
-│  ├─ storage.py
-│  ├─ data/
-│  │  └─ electrical_components.json
-│  ├─ services/
-│  │  ├─ electrical.py
-│  │  ├─ rustplus_client.py
-│  │  ├─ server_finder.py
-│  │  └─ tools.py
-│  └─ ui/
-│     ├─ common.py
-│     └─ tabs/
-│        ├─ dashboard.py
-│        ├─ electrical.py
-│        ├─ map_tab.py
-│        ├─ shops.py
-│        ├─ team.py
-│        ├─ threats.py
-│        ├─ tools.py
-│        └─ notes.py
-└─ tests/
-   ├─ test_electrical.py
-   └─ test_server_finder.py
-```
->>>>>>> Stashed changes
-
-## Manual install and run
-
-Python 3.11 or 3.12 is recommended.
-
-```powershell
-py -m venv .venv
-.venv\Scripts\activate
-python -m pip install --upgrade pip
-pip install -r requirements.txt
-python launcher.py
+```json
+{
+  "ip": "server IP",
+  "port": 28082,
+  "playerId": 76561190000000000,
+  "playerToken": 123456789
+}
 ```
 
-To bypass the wait-for-server launcher and open the GUI directly:
+The launcher validates the completed profile before opening the GUI.
 
-```powershell
-python main.py
-```
+## Build the single Windows EXE
 
-<<<<<<< Updated upstream
-To run the planning, BattleMetrics, RustMaps, and detection tools without live Rust+ support:
-=======
-## Build the optional EXE
->>>>>>> Stashed changes
+Run:
 
 ```text
 build_windows_exe.bat
 ```
 
-The console-enabled executable is written to:
+The build script:
+
+1. Creates/reuses `.venv`.
+2. Installs the app dependencies and PyInstaller.
+3. Compiles the Python source.
+4. Runs all tests.
+5. Bundles the launcher, GUI, services, libraries, and package data into one console-enabled EXE.
+6. Writes a SHA-256 checksum.
+
+Output:
 
 ```text
-dist\RustCompanionPlus\RustCompanionPlus.exe
+release\RustCompanionPlus.exe
+release\RustCompanionPlus.exe.sha256
+release\README-FIRST-RUN.txt
 ```
 
-## API setup
+## Important limitation
 
-### BattleMetrics
-
-Public server metadata generally works without a token. Add a BattleMetrics bearer token only when you need an authenticated endpoint, such as permitted current-player data. The app does not bypass BattleMetrics permissions.
-
-### RustMaps
-
-Create/copy an API key from the RustMaps dashboard and paste it into the Overview tab. The integration uses the v4 map status/generation endpoints and respects API errors, rate limits, subscription limits, and `canDownload`.
-
-### Rust+
-
-The Python Rust+ wrapper expects:
-
-- Server IP
-- Companion/app port
-- Steam ID
-- Player token
-
-<<<<<<< Updated upstream
-Rust+ tokens are server-specific. Save a profile for each paired server. The app masks tokens in the GUI but currently stores credentials and API keys in its local JSON application-data folder. Use this only on your own Windows account; an OS keyring backend is still recommended before distributing the app broadly.
-
-Rust+ data access varies by server and pairing state. Features the companion protocol does not expose directly—such as arbitrary enemy tracking, exact decay state, or unrestricted inventory access—remain manual planners or require a server plugin you control.
-
-## Electrical assumptions
-
-- Power is represented in Rust Watts (`rW`).
-- Battery capacity is represented in Rust Watt-minutes (`rWm`).
-- Runtime with no generation is `capacity / load`.
-- The live-generation runtime is an estimate using editable solar and wind utilization assumptions.
-- Battery charging is modeled at 80% efficiency for planning suggestions.
-- Branching/wiring behavior is simplified into component power draw. The app is a planner, not a circuit simulator.
-
-Edit `rust_companion_plus/data/electrical_components.json` to add or update components without changing GUI code.
-=======
-The host can be detected from the live Rust connection. The companion port and player token are server-specific pairing values and are not inferred from unrelated network sockets.
-
-Rust+ data access varies by server and pairing state. Features the protocol does not expose directly—such as unrestricted enemy tracking, exact decay state or arbitrary inventory access—remain manual planners or require a server plugin you control.
->>>>>>> Stashed changes
+A Rust client cannot always discover `app.port` from the normal game connection alone. The launcher checks every legitimate published source it has, but when a server hides the port, the authoritative automatic method is a Rust+ pairing notification. It does not scan or guess arbitrary ports.
 
 ## Tests
 
 ```powershell
 python -m unittest discover -s tests -v
 ```
-
-## Electrical assumptions
-
-<<<<<<< Updated upstream
-1. Store tokens/API keys in Windows Credential Manager or another OS keyring.
-2. Add a long-lived async Rust+ socket and push notifications.
-3. Add map pan/zoom, clickable monument/shop navigation, and persisted polygons.
-4. Add BattleMetrics historical population/wipe charts where the API/account permits them.
-5. Import current item definitions automatically into vending and recycle tools.
-6. Add a node-and-wire circuit canvas and validate branch/splitter topology.
-7. Package with PyInstaller and sign Windows builds.
-=======
-- Power is represented in Rust Watts (`rW`).
-- Battery capacity is represented in Rust Watt-minutes (`rWm`).
-- Runtime with no generation is `capacity / load`.
-- Live-generation runtime is an estimate using editable solar and wind utilization assumptions.
-- Battery charging is modeled at 80% efficiency for planning suggestions.
-- Branching/wiring behavior is simplified into component power draw. The app is a planner, not a circuit simulator.
->>>>>>> Stashed changes

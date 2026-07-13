@@ -1,10 +1,5 @@
-from rust_companion_plus.app import RustCompanionApp
-
-
-def main() -> None:
-    app = RustCompanionApp()
-    app.mainloop()
+from rust_companion_plus.bootstrap import main
 
 
 if __name__ == "__main__":
-    main()
+    raise SystemExit(main())
