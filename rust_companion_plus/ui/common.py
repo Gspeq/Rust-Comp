@@ -70,9 +70,9 @@ def run_in_worker(
             result = work()
         except Exception as exc:
             callback = on_error or (lambda error: messagebox.showerror("Rust Companion+", str(error)))
-            owner.after(0, lambda: callback(exc))
+            owner.after(0, lambda error=exc: callback(error))
         else:
-            owner.after(0, lambda: on_success(result))
+            owner.after(0, lambda value=result: on_success(value))
 
     threading.Thread(target=target, daemon=True).start()
 

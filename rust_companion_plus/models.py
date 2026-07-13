@@ -85,17 +85,10 @@ class ElectricalSetup:
             name=str(data.get("name", "Main Base")),
             version=int(data.get("version", 1)),
             goal_text=str(data.get("goal_text", "")),
-            components=[
-                SetupComponent.from_dict(item)
-                for item in data.get("components", [])
-            ],
+            components=[SetupComponent.from_dict(item) for item in data.get("components", [])],
             assumptions={
-                "solar_utilization": float(
-                    data.get("assumptions", {}).get("solar_utilization", 0.35)
-                ),
-                "wind_utilization": float(
-                    data.get("assumptions", {}).get("wind_utilization", 0.55)
-                ),
+                "solar_utilization": float(data.get("assumptions", {}).get("solar_utilization", 0.35)),
+                "wind_utilization": float(data.get("assumptions", {}).get("wind_utilization", 0.55)),
                 "battery_charge_fraction": float(
                     data.get("assumptions", {}).get("battery_charge_fraction", 1.0)
                 ),
