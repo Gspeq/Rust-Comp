@@ -10,6 +10,8 @@ from rust_companion_plus.config import STORE_PATH
 
 DEFAULT_STORE: dict[str, Any] = {
     "credentials": {},
+    "credential_profiles": {},
+    "integration_settings": {},
     "electrical_setups": [],
     "threats": [],
     "resource_overlays": [],
