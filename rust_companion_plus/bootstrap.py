@@ -492,6 +492,79 @@ def _load_current_profile(
 
 
 
+def _exact_saved_server_profile(
+    store: JsonStore,
+    key: str,
+) -> RustCredentials:
+    profiles = dict(
+        store.get("credential_profiles", {}) or {}
+    )
+    return RustCredentials.from_dict(
+        profiles.get(key, {})
+    )
+
+
+def _server_pairing_state(
+    store: JsonStore,
+    key: str,
+) -> str:
+    profile = _exact_saved_server_profile(store, key)
+    if profile.is_complete():
+        return "saved"
+    if any(
+        (
+            profile.host,
+            profile.port,
+            profile.steam_id,
+            profile.player_token,
+        )
+    ):
+        return "incomplete"
+    return "unpaired"
+
+
+def _print_server_pairing_state(
+    store: JsonStore,
+    key: str,
+) -> None:
+    state = _server_pairing_state(store, key)
+    if state == "saved":
+        print(
+            _paint(
+                f"[CURRENT SERVER] Saved Rust+ authorization exists "
+                f"for {key}. It must still pass live validation.",
+                GREEN,
+                bold=True,
+            )
+        )
+        return
+
+    label = "INCOMPLETE" if state == "incomplete" else "UNPAIRED"
+    print(
+        _paint(
+            f"[CURRENT SERVER] {label}: no complete Rust+ "
+            f"authorization exists for {key}.",
+            YELLOW,
+            bold=True,
+        )
+    )
+    print(
+        _paint(
+            "Rust's 'push notifications enabled' message is "
+            "account/device-wide. It does not mean this server "
+            "has a player token.",
+            WHITE,
+        )
+    )
+    print(
+        _paint(
+            "This launcher will not mark the current server paired "
+            "until a fresh notification for this endpoint is received "
+            "and its Rust+ WebSocket validates.",
+            GRAY,
+        )
+    )
+
 def _missing_fields(current: RustCredentials) -> list[str]:
     result: list[str] = []
     if not current.steam_id:
@@ -747,8 +820,9 @@ def _listen_for_pairing(
         )
         print("  - If Rust shows Pair With Server, choose it once.")
         print(
-            "  - If Rust still shows notifications enabled, reopen the "
-            "Rust+ menu after cleanup and use Resend once if needed."
+            "  - If Rust says push notifications are enabled, that is "
+            "the account-wide receiver state, not this server's pairing "
+            "state. Choose Resend once to send this server's token."
         )
         print(
             _paint(
@@ -903,20 +977,63 @@ def _collect_missing_fields(
     finder = RustServerFinder(store)
     pairing_source = ""
 
+    _print_server_pairing_state(store, key)
+
     while not current.is_complete():
         print()
-        print(_paint(f"SERVER PROFILE INCOMPLETE: {', '.join(_missing_fields(current))}", YELLOW, bold=True))
-        print(_paint("The GUI stays locked until this exact server profile is complete.", GRAY))
-        print("  [A] Auto-receive a fresh Rust+ pairing notification")
-        print("  [P] Paste/import a Rust+ pairing payload")
-        print("  [R] Retry log, BattleMetrics, and A2S app-port discovery")
+        print(
+            _paint(
+                f"SERVER PROFILE INCOMPLETE: "
+                f"{', '.join(_missing_fields(current))}",
+                YELLOW,
+                bold=True,
+            )
+        )
+        print(
+            _paint(
+                "The GUI stays locked until this exact game-server "
+                "profile is complete.",
+                GRAY,
+            )
+        )
+        print(
+            _paint(
+                "Global push notifications may already be enabled. "
+                "That is normal; use Resend to deliver this server's "
+                "fresh pairing authorization.",
+                WHITE,
+            )
+        )
+        print(
+            "  [A] Auto-receive this server's fresh Rust+ pairing "
+            "notification"
+        )
+        print("  [P] Paste/import this server's Rust+ pairing payload")
+        print(
+            "  [R] Retry log, BattleMetrics, and A2S app-port discovery"
+        )
         print("  [M] Enter only the missing values manually")
-        choice = input(_paint("> Select A / P / R / M: ", AMBER)).strip().casefold()
+        choice = input(
+            _paint("> Select A / P / R / M: ", AMBER)
+        ).strip().casefold()
 
         if choice == "a":
-            pairing_source = _listen_for_pairing(current, report.selected.host, finder) or pairing_source
+            pairing_source = (
+                _listen_for_pairing(
+                    current,
+                    report.selected.host,
+                    finder,
+                )
+                or pairing_source
+            )
         elif choice == "p":
-            pairing_source = _import_pairing_text(current, report.selected.host) or pairing_source
+            pairing_source = (
+                _import_pairing_text(
+                    current,
+                    report.selected.host,
+                )
+                or pairing_source
+            )
         elif choice == "r":
             refreshed = _retry_port_discovery(store)
             if refreshed:
@@ -927,9 +1044,17 @@ def _collect_missing_fields(
         else:
             print(_paint("Choose A, P, R, or M.", RED))
             continue
-        _save_profile(store, key, current, report, pairing_source=pairing_source)
+
+        _save_profile(
+            store,
+            key,
+            current,
+            report,
+            pairing_source=pairing_source,
+        )
 
     return report, pairing_source
+
 
 
 def _edit_profile(current: RustCredentials) -> None:
