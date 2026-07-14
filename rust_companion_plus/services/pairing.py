@@ -13,20 +13,38 @@ from typing import Any, Callable
 from urllib.parse import parse_qs, urlparse
 
 
-_HOST_KEYS = {"ip", "host", "serverip", "server_ip", "address"}
-_PORT_KEYS = {
-    "port",
-    "appport",
+_HOST_KEYS = (
+    "serverip",
+    "server_ip",
+    "host",
+    "ip",
+    "address",
+)
+_PORT_KEYS = (
+    "rust_app_port",
+    "rustappport",
     "app_port",
     "app.port",
-    "rustappport",
-    "rust_app_port",
-    "companionport",
     "companion_port",
-}
-_STEAM_KEYS = {"playerid", "player_id", "steamid", "steam_id"}
-_TOKEN_KEYS = {"playertoken", "player_token", "token"}
-_NAME_KEYS = {"name", "servername", "server_name"}
+    "companionport",
+    "appport",
+    "port",
+)
+_STEAM_KEYS = (
+    "playerid",
+    "player_id",
+    "steamid",
+    "steam_id",
+)
+_TOKEN_KEYS = (
+    "playertoken",
+    "player_token",
+)
+_NAME_KEYS = (
+    "servername",
+    "server_name",
+    "name",
+)
 
 
 @dataclass(slots=True)
@@ -217,7 +235,7 @@ def _pairing_missing_fields(record: PairingRecord) -> list[str]:
 
 def _first_player_token(
     mapping: dict[str, Any],
-    keys: set[str],
+    keys: Any,
 ) -> int:
     for key in keys:
         value = mapping.get(key)
@@ -227,7 +245,20 @@ def _first_player_token(
             continue
         if parsed != 0:
             return parsed
+
+    has_pairing_context = bool(
+        _first_text(mapping, _HOST_KEYS)
+        and _first_int(mapping, _PORT_KEYS)
+        and _first_int(mapping, _STEAM_KEYS)
+    )
+    if has_pairing_context and "token" in mapping:
+        try:
+            parsed = normalize_player_token(mapping.get("token"))
+        except (TypeError, ValueError):
+            return 0
+        return parsed if parsed != 0 else 0
     return 0
+
 
 
 def _decode_push_value(value: Any) -> Any:
@@ -238,29 +269,85 @@ def _decode_push_value(value: Any) -> Any:
     return value
 
 
-def _coerce_data_message_mapping(value: Any) -> dict[str, Any]:
+def _iter_app_data_entries(
+    app_data: Any,
+) -> list[tuple[str, Any]]:
+    if app_data is None:
+        return []
+    if isinstance(app_data, dict):
+        return [
+            (str(key), _decode_push_value(value))
+            for key, value in app_data.items()
+            if str(key).strip()
+        ]
+    try:
+        raw_entries = list(app_data)
+    except TypeError:
+        return []
+
+    rows: list[tuple[str, Any]] = []
+    for item in raw_entries:
+        if isinstance(item, dict):
+            key = item.get("key")
+            child = item.get("value")
+        elif isinstance(item, (tuple, list)) and len(item) >= 2:
+            key, child = item[0], item[1]
+        else:
+            key = getattr(item, "key", "")
+            child = getattr(item, "value", None)
+        if key is None or not str(key).strip():
+            continue
+        rows.append((str(key), _decode_push_value(child)))
+    return rows
+
+
+def _app_data_entry_count(value: Any) -> int:
+    return len(
+        _iter_app_data_entries(
+            getattr(value, "app_data", None)
+        )
+    )
+
+
+def _normalized_server_label(value: str) -> str:
+    return re.sub(
+        r"[^a-z0-9]+",
+        "",
+        str(value or "").casefold(),
+    )
+
+
+def _is_conflicting_delayed_authorization(
+    current: PairingRecord | None,
+    incoming: PairingRecord,
+) -> bool:
+    if current is None or current.is_complete():
+        return False
+    if not incoming.player_token:
+        return False
+    if not current.host or not incoming.host:
+        return False
+    if current.matches_host(incoming.host):
+        return False
+    current_name = _normalized_server_label(current.server_name)
+    incoming_name = _normalized_server_label(incoming.server_name)
+    return bool(
+        current_name
+        and incoming_name
+        and current_name != incoming_name
+    )
+
+def _coerce_data_message_mapping(
+    value: Any,
+) -> dict[str, Any]:
     result: dict[str, Any] = {}
     if isinstance(value, dict):
         result.update(value)
 
-    app_data = getattr(value, "app_data", None)
-    if app_data is not None:
-        try:
-            entries = list(app_data)
-        except TypeError:
-            entries = []
-        for item in entries:
-            if isinstance(item, dict):
-                key = item.get("key")
-                child = item.get("value")
-            elif isinstance(item, (tuple, list)) and len(item) >= 2:
-                key, child = item[0], item[1]
-            else:
-                key = getattr(item, "key", "")
-                child = getattr(item, "value", None)
-            if key is None or not str(key).strip():
-                continue
-            result[str(key)] = _decode_push_value(child)
+    for key, child in _iter_app_data_entries(
+        getattr(value, "app_data", None)
+    ):
+        result[key] = child
 
     if not isinstance(value, dict) and hasattr(value, "__dict__"):
         try:
@@ -273,11 +360,23 @@ def _coerce_data_message_mapping(value: Any) -> dict[str, Any]:
             child = _decode_push_value(child)
             if isinstance(
                 child,
-                (str, int, float, bool, bytes, bytearray, dict, list, tuple),
+                (
+                    str,
+                    int,
+                    float,
+                    bool,
+                    bytes,
+                    bytearray,
+                    memoryview,
+                    dict,
+                    list,
+                    tuple,
+                ),
             ) or child is None:
                 result.setdefault(str(key), child)
 
     return result
+
 
 
 def _debug_event(name: str, **fields: Any) -> None:
@@ -326,13 +425,13 @@ class PairingNotificationInbox:
             data_message: Any,
         ) -> None:
             inbox._ready.set()
-            normalized_data = _coerce_data_message_mapping(data_message)
+            normalized_data = _coerce_data_message_mapping(
+                data_message
+            )
             _debug_event(
                 "pairing_data_message_normalized",
                 keys=sorted(normalized_data.keys()),
-                app_data_count=len(
-                    list(getattr(data_message, "app_data", []) or [])
-                ),
+                app_data_count=_app_data_entry_count(data_message),
                 body_present=bool(normalized_data.get("body")),
                 channel_id=str(normalized_data.get("channelId") or ""),
             )
@@ -354,16 +453,25 @@ class PairingNotificationInbox:
                 )
 
             combined: PairingRecord | None = None
-            for candidate in (
-                normalized_data,
-                notification,
-                data_message,
-                obj,
+            for candidate_name, candidate in (
+                ("normalized_app_data", normalized_data),
+                ("notification", notification),
+                ("data_message", data_message),
+                ("callback_object", obj),
             ):
-                record = parse_pairing_payload(
-                    candidate,
-                    source="rustplus_fcm_notification",
-                )
+                try:
+                    record = parse_pairing_payload(
+                        candidate,
+                        source="rustplus_fcm_notification",
+                    )
+                except Exception as parse_error:
+                    _debug_event(
+                        "pairing_candidate_parse_failed",
+                        candidate=candidate_name,
+                        exception_type=type(parse_error).__name__,
+                        message=str(parse_error),
+                    )
+                    continue
                 combined = _merge_pairing_records(combined, record)
 
             if not _pairing_record_has_signal(combined):
@@ -395,8 +503,8 @@ class PairingNotificationInbox:
             server = combined.server_name or combined.host or "unknown server"
             if combined.is_complete():
                 print(
-                    "[RUST+ PUSH] Complete pairing authorization decoded for "
-                    f"{server}."
+                    "[RUST+ PUSH] Complete pairing authorization "
+                    f"decoded for {server}."
                 )
             else:
                 missing = ", ".join(_pairing_missing_fields(combined))
@@ -439,6 +547,7 @@ class PairingNotificationInbox:
             daemon=True,
         )
         self._thread.start()
+
 
     def wait_until_ready(self, timeout: float = 12.0) -> bool:
         self.start()
@@ -594,6 +703,28 @@ class PairingNotificationInbox:
                     "[RUST+ PUSH] Ignored a fresh notification for a "
                     "different Steam account."
                 )
+                _debug_event(
+                    "pairing_record_ignored",
+                    reason="different_steam_account",
+                    host=record.host,
+                    server_name=record.server_name,
+                )
+                continue
+
+            if _is_conflicting_delayed_authorization(aggregate, record):
+                print(
+                    "[RUST+ PUSH] Ignored a delayed authorization for "
+                    f"{record.server_name or record.host}; it conflicts "
+                    "with the active fresh pairing request."
+                )
+                _debug_event(
+                    "pairing_record_ignored",
+                    reason="conflicting_delayed_authorization",
+                    active_host=aggregate.host if aggregate else "",
+                    active_server=aggregate.server_name if aggregate else "",
+                    incoming_host=record.host,
+                    incoming_server=record.server_name,
+                )
                 continue
 
             if (
@@ -653,6 +784,7 @@ class PairingNotificationInbox:
                 "[RUST+ PUSH] Keep the receiver open while completing the "
                 "phone confirmation. Later pushes are merged automatically."
             )
+
 
 
 
@@ -836,6 +968,21 @@ def _append_payload_diagnostic(
     debug_dir = APP_DATA_DIR / "debug"
     debug_dir.mkdir(parents=True, exist_ok=True)
     path = debug_dir / "pairing-payload-structure.jsonl"
+
+    if path.is_file() and path.stat().st_size > 1_500_000:
+        try:
+            retained = path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()[-80:]
+            path.write_text(
+                "\n".join(retained) + ("\n" if retained else ""),
+                encoding="utf-8",
+                newline="\n",
+            )
+        except OSError:
+            pass
+
     datetime_module = __import__("datetime")
     payload = {
         "captured_at": datetime_module.datetime.now(
@@ -847,8 +994,10 @@ def _append_payload_diagnostic(
     }
     with path.open("a", encoding="utf-8") as handle:
         handle.write(
-            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+            json.dumps(payload, ensure_ascii=False, sort_keys=True)
+            + "\n"
         )
+
 
 def save_fcm_config(path: Path, config: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -973,7 +1122,10 @@ def _normalize_host(value: str) -> str:
     return value.strip().strip("[]").casefold()
 
 
-def _first_text(mapping: dict[str, Any], keys: set[str]) -> str:
+def _first_text(
+    mapping: dict[str, Any],
+    keys: Any,
+) -> str:
     for key in keys:
         value = mapping.get(key)
         if value is not None and str(value).strip():
@@ -981,7 +1133,11 @@ def _first_text(mapping: dict[str, Any], keys: set[str]) -> str:
     return ""
 
 
-def _first_int(mapping: dict[str, Any], keys: set[str]) -> int:
+
+def _first_int(
+    mapping: dict[str, Any],
+    keys: Any,
+) -> int:
     for key in keys:
         value = mapping.get(key)
         try:

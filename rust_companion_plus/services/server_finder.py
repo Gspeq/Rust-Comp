@@ -1,4 +1,5 @@
 from __future__ import annotations
+import hashlib
 import base64
 
 import ipaddress
@@ -843,12 +844,18 @@ def _probe_rustplus_websocket(
     *,
     timeout: float = 1.75,
 ) -> tuple[bool, str]:
-    # Verify one explicit candidate with a standard WebSocket upgrade.
-    # This is not a range scan and sends no Rust+ credentials.
     if not host or not 10000 <= int(port) <= 65535:
         return False, "candidate is outside Rust+ port requirements"
 
     key = base64.b64encode(os.urandom(16)).decode("ascii")
+    expected_accept = base64.b64encode(
+        hashlib.sha1(
+            (
+                key
+                + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+            ).encode("ascii")
+        ).digest()
+    ).decode("ascii")
     request = (
         "GET / HTTP/1.1\r\n"
         f"Host: {host}:{int(port)}\r\n"
@@ -882,13 +889,31 @@ def _probe_rustplus_websocket(
             continue
 
         header = response.decode("latin-1", errors="replace")
-        first_line = header.splitlines()[0] if header else ""
-        lowered = header.casefold()
-        if " 101 " in f" {first_line} " and "upgrade: websocket" in lowered:
-            return True, first_line
-        last_error = first_line or "endpoint closed without an HTTP response"
+        lines = header.splitlines()
+        first_line = lines[0] if lines else ""
+        headers: dict[str, str] = {}
+        for line in lines[1:]:
+            if ":" not in line:
+                continue
+            name, value = line.split(":", 1)
+            headers[name.strip().casefold()] = value.strip()
+
+        if " 101 " not in f" {first_line} ":
+            last_error = first_line or "no HTTP status received"
+            continue
+        if headers.get("upgrade", "").casefold() != "websocket":
+            last_error = "HTTP 101 lacked Upgrade: websocket"
+            continue
+        if "upgrade" not in headers.get("connection", "").casefold():
+            last_error = "HTTP 101 lacked Connection: Upgrade"
+            continue
+        if headers.get("sec-websocket-accept", "") != expected_accept:
+            last_error = "HTTP 101 returned an invalid Sec-WebSocket-Accept"
+            continue
+        return True, f"{first_line}; WebSocket accept key verified"
 
     return False, last_error
+
 
 def _query_a2s_rules(host: str, port: int, *, timeout: float = 1.75) -> dict[str, str]:
     """Read Source A2S_RULES without scanning or guessing arbitrary ports."""

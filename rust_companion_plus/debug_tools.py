@@ -51,18 +51,31 @@ def _is_secret_key(key: Any) -> bool:
     return any(fragment in normalized for fragment in _SECRET_FRAGMENTS)
 
 
-def _redact(value: Any, *, key: str = "", depth: int = 0) -> Any:
+def _redact(
+    value: Any,
+    *,
+    key: str = "",
+    depth: int = 0,
+) -> Any:
     if key and _is_secret_key(key):
-        normalized_key = str(key).casefold().replace("-", "").replace("_", "")
+        normalized_key = (
+            str(key).casefold().replace("-", "").replace("_", "")
+        )
         if isinstance(value, bool) or normalized_key.endswith("present"):
             return bool(value)
+        if normalized_key.endswith("sign") and value in {
+            "positive",
+            "negative",
+            "missing",
+            "zero",
+        }:
+            return value
         if value in (None, "", 0, False):
             return value
         return "<redacted>"
 
     if depth >= 6:
         return f"<{type(value).__name__}>"
-
     if isinstance(value, dict):
         result: dict[str, Any] = {}
         for child_key, child in list(value.items())[:100]:
@@ -74,24 +87,20 @@ def _redact(value: Any, *, key: str = "", depth: int = 0) -> Any:
         if len(value) > 100:
             result["<truncated>"] = len(value) - 100
         return result
-
     if isinstance(value, (list, tuple, set)):
         rows = list(value)
         result = [_redact(child, depth=depth + 1) for child in rows[:100]]
         if len(rows) > 100:
             result.append(f"<{len(rows) - 100} more>")
         return result
-
     if isinstance(value, Path):
         return str(value)
-
-    if isinstance(value, bytes):
+    if isinstance(value, (bytes, bytearray, memoryview)):
         return f"<bytes:{len(value)}>"
-
     if isinstance(value, (str, int, float, bool)) or value is None:
         return value
-
     return f"<{type(value).__module__}.{type(value).__name__}>"
+
 
 
 def _shape(value: Any) -> dict[str, Any]:
@@ -121,7 +130,9 @@ def _shape(value: Any) -> dict[str, Any]:
     return {"type": f"{type(value).__module__}.{type(value).__name__}"}
 
 
-def _record_summary(record: Any) -> dict[str, Any] | None:
+def _record_summary(
+    record: Any,
+) -> dict[str, Any] | None:
     if record is None:
         return None
     steam_id = int(getattr(record, "steam_id", 0) or 0)
@@ -132,13 +143,23 @@ def _record_summary(record: Any) -> dict[str, Any] | None:
         "steam_suffix": str(steam_id)[-6:] if steam_id else "",
         "steam_present": bool(steam_id),
         "player_token_present": bool(player_token),
+        "player_token_sign": (
+            "negative"
+            if player_token < 0
+            else "positive"
+            if player_token > 0
+            else "missing"
+        ),
         "server_name": str(getattr(record, "server_name", "") or ""),
         "source": str(getattr(record, "source", "") or ""),
         "complete": bool(getattr(record, "is_complete", lambda: False)()),
     }
 
 
-def _credentials_summary(credentials: Any) -> dict[str, Any]:
+
+def _credentials_summary(
+    credentials: Any,
+) -> dict[str, Any]:
     steam_id = int(getattr(credentials, "steam_id", 0) or 0)
     player_token = int(getattr(credentials, "player_token", 0) or 0)
     return {
@@ -147,8 +168,18 @@ def _credentials_summary(credentials: Any) -> dict[str, Any]:
         "steam_suffix": str(steam_id)[-6:] if steam_id else "",
         "steam_present": bool(steam_id),
         "player_token_present": bool(player_token),
-        "complete": bool(getattr(credentials, "is_complete", lambda: False)()),
+        "player_token_sign": (
+            "negative"
+            if player_token < 0
+            else "positive"
+            if player_token > 0
+            else "missing"
+        ),
+        "complete": bool(
+            getattr(credentials, "is_complete", lambda: False)()
+        ),
     }
+
 
 
 def _report_summary(report: Any) -> dict[str, Any]:
@@ -902,6 +933,22 @@ def create_review_report(
                 {
                     "registered_by": config.get(
                         "registered_by",
+                        "",
+                    ),
+                    "device_id": config.get(
+                        "device_id",
+                        "",
+                    ),
+                    "registered_at": config.get(
+                        "registered_at",
+                        "",
+                    ),
+                    "receiver_registration_mode": config.get(
+                        "receiver_registration_mode",
+                        "",
+                    ),
+                    "last_facepunch_refresh_status": config.get(
+                        "last_facepunch_refresh_status",
                         "",
                     ),
                     "has_fcm_credentials": isinstance(

@@ -1,4 +1,6 @@
 from __future__ import annotations
+import hashlib
+import base64
 
 import inspect
 import json
@@ -69,11 +71,32 @@ class PayloadStringAndPortProbeTests(unittest.TestCase):
         def server() -> None:
             connection, _address = listener.accept()
             with connection:
-                connection.recv(4096)
+                request = connection.recv(4096).decode(
+                    "ascii",
+                    errors="replace",
+                )
+                key = ""
+                for line in request.splitlines():
+                    if line.casefold().startswith(
+                        "sec-websocket-key:"
+                    ):
+                        key = line.split(":", 1)[1].strip()
+                        break
+                accept = base64.b64encode(
+                    hashlib.sha1(
+                        (
+                            key
+                            + "258EAFA5-E914-47DA-95CA-C5AB0DC85B11"
+                        ).encode("ascii")
+                    ).digest()
+                ).decode("ascii")
                 connection.sendall(
-                    b"HTTP/1.1 101 Switching Protocols\r\n"
-                    b"Upgrade: websocket\r\n"
-                    b"Connection: Upgrade\r\n\r\n"
+                    (
+                        "HTTP/1.1 101 Switching Protocols\r\n"
+                        "Upgrade: websocket\r\n"
+                        "Connection: Upgrade\r\n"
+                        f"Sec-WebSocket-Accept: {accept}\r\n\r\n"
+                    ).encode("ascii")
                 )
             listener.close()
 
@@ -88,6 +111,8 @@ class PayloadStringAndPortProbeTests(unittest.TestCase):
         thread.join(timeout=1.0)
 
         self.assertTrue(success, detail)
+        self.assertIn("accept key verified", detail)
+
 
     def test_finder_uses_only_official_plus_67_candidate(self) -> None:
         rendered = inspect.getsource(

@@ -267,17 +267,38 @@ def _load_current_profile(
     )
 
     if report.rust_app_port:
+        saved_pairing = bool(
+            saved.player_token and saved.host and saved.port
+        )
         saved_split_endpoint = bool(
-            saved.player_token
-            and saved.host
+            saved_pairing
             and saved.host.casefold() != selected.host.casefold()
         )
+        heuristic_source = (
+            str(report.rust_app_port_source or "").casefold()
+            == "facepunch_default_plus_67_websocket_probe"
+        )
+
         if saved_split_endpoint:
             print(
                 _paint(
-                    "[PROFILE] Retaining the saved verified Rust+ companion "
-                    f"endpoint {saved.host}:{saved.port}; automatic discovery "
-                    "describes the game endpoint.",
+                    "[PROFILE] Retaining the saved Rust+ companion "
+                    f"endpoint {saved.host}:{saved.port}; automatic "
+                    "discovery describes the game endpoint.",
+                    GRAY,
+                )
+            )
+        elif (
+            saved_pairing
+            and heuristic_source
+            and saved.port != report.rust_app_port
+        ):
+            print(
+                _paint(
+                    "[PROFILE] Retaining saved Rust+ port "
+                    f"{saved.port}; discovered port "
+                    f"{report.rust_app_port} is a verified default "
+                    "candidate, not a server-published app.port.",
                     GRAY,
                 )
             )
@@ -285,14 +306,15 @@ def _load_current_profile(
             if current.port and current.port != report.rust_app_port:
                 print(
                     _paint(
-                        f"[PORT UPDATE] Saved port {current.port} changed to "
-                        f"published port {report.rust_app_port}.",
+                        f"[PORT UPDATE] Saved port {current.port} "
+                        f"changed to published port {report.rust_app_port}.",
                         YELLOW,
                     )
                 )
             current.port = report.rust_app_port
 
     return key, current
+
 
 
 
@@ -436,12 +458,23 @@ def _listen_for_pairing(
         return ""
 
     try:
-        refresh_fcm_registration(
+        refreshed_config = refresh_fcm_registration(
             config,
             status=lambda message: print(
                 f"[PAIRING SETUP] {message}"
             ),
         )
+        if refreshed_config is not None:
+            config = refreshed_config
+        else:
+            print(
+                _paint(
+                    "[PAIRING SETUP WARNING] The saved receiver lacks "
+                    "the metadata required for an automatic Facepunch "
+                    "refresh. Continuing with its existing FCM identity.",
+                    YELLOW,
+                )
+            )
     except FCMRegistrationError as exc:
         print(
             _paint(
@@ -591,7 +624,7 @@ def _prompt_required_int(label: str, validator: Callable[[int], bool]) -> int:
         try:
             value = int(raw)
         except ValueError:
-            print(_paint("  Enter digits only.", RED))
+            print(_paint("  Enter a signed integer; a leading minus is allowed.", RED))
             continue
         if validator(value):
             return value
@@ -927,7 +960,7 @@ def prepare_credentials(store: JsonStore, report: DetectionReport) -> RustCreden
 def launch_gui() -> int:
     from rust_companion_plus.app import RustCompanionApp
 
-    print(_paint("\nALL GATES GREEN â€” launching Rust Companion+ with the verified live profile.\n", GREEN, bold=True))
+    print(_paint("\nALL GATES GREEN — launching Rust Companion+ with the verified live profile.\n", GREEN, bold=True))
     app = RustCompanionApp()
     app.mainloop()
     return 0

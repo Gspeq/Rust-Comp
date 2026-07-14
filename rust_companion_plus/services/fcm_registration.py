@@ -60,7 +60,6 @@ def register_fcm_config(
     auth_token_fetcher: Callable[[float], str] | None = None,
     push_registrar: Callable[[str, str], None] | None = None,
 ) -> dict[str, Any]:
-    """Create and save the FCM configuration used by PairingNotificationInbox."""
     announce = status or (lambda _message: None)
     android_register = android_register or _register_android_fcm
     expo_token_fetcher = expo_token_fetcher or _fetch_expo_push_token
@@ -75,10 +74,19 @@ def register_fcm_config(
     expo_push_token = _call("Expo token request", expo_token_fetcher, fcm_token)
 
     announce("Waiting for the official Rust+ Steam authorization...")
-    rustplus_auth_token = _call("Rust+ Steam authorization", auth_token_fetcher, timeout)
+    rustplus_auth_token = _call(
+        "Rust+ Steam authorization",
+        auth_token_fetcher,
+        timeout,
+    )
 
     announce("Registering the receiver with Facepunch...")
-    _call("Facepunch push registration", push_registrar, rustplus_auth_token, expo_push_token)
+    _call(
+        "Facepunch push registration",
+        push_registrar,
+        rustplus_auth_token,
+        expo_push_token,
+    )
 
     config = {
         "fcm_credentials": fcm_credentials,
@@ -86,6 +94,10 @@ def register_fcm_config(
         "rustplus_auth_token": rustplus_auth_token,
         "device_id": _DEFAULT_DEVICE_ID,
         "registered_by": "Rust Companion+",
+        "registered_at": datetime.now(
+            timezone.utc
+        ).isoformat(timespec="seconds"),
+        "receiver_registration_mode": "new_identity",
     }
     save_fcm_config(output_path, config)
     try:
@@ -94,6 +106,7 @@ def register_fcm_config(
         pass
     announce(f"Notification receiver saved to {output_path}")
     return config
+
 
 
 def _call(label: str, function: Callable[..., Any], *args: Any) -> Any:
@@ -169,16 +182,24 @@ def _fetch_expo_push_token(fcm_token: str) -> str:
     return str(token).strip()
 
 
-def _register_with_rust_plus(auth_token: str, expo_push_token: str) -> None:
+def _register_with_rust_plus(
+    auth_token: str,
+    expo_push_token: str,
+) -> None:
     payload = json.dumps(
         {
             "AuthToken": auth_token,
-            "DeviceId": "rustplus.py",
+            "DeviceId": _DEFAULT_DEVICE_ID,
             "PushKind": 3,
             "PushToken": expo_push_token,
         }
     ).encode("utf-8")
-    _request_json(_RUST_PUSH_REGISTER_URL, payload, allow_empty=True)
+    _request_json(
+        _RUST_PUSH_REGISTER_URL,
+        payload,
+        allow_empty=True,
+    )
+
 
 
 
@@ -250,11 +271,19 @@ def refresh_fcm_registration(
 
 
 
-def _request_json(url: str, payload: bytes, *, allow_empty: bool = False) -> dict[str, Any]:
+def _request_json(
+    url: str,
+    payload: bytes,
+    *,
+    allow_empty: bool = False,
+) -> dict[str, Any]:
     request = urllib.request.Request(
         url,
         data=payload,
-        headers={"Content-Type": "application/json", "User-Agent": "RustCompanionPlus/1.0"},
+        headers={
+            "Content-Type": "application/json",
+            "User-Agent": "RustCompanionPlus/1.0",
+        },
         method="POST",
     )
     try:
@@ -263,22 +292,37 @@ def _request_json(url: str, payload: bytes, *, allow_empty: bool = False) -> dic
             raw = response.read().decode("utf-8", errors="replace")
     except urllib.error.HTTPError as exc:
         detail = exc.read().decode("utf-8", errors="replace")
-        raise FCMRegistrationError(f"Remote service returned HTTP {exc.code}: {detail[:160]}") from exc
+        raise FCMRegistrationError(
+            f"Remote service returned HTTP {exc.code}: {detail[:160]}"
+        ) from exc
     except urllib.error.URLError as exc:
-        raise FCMRegistrationError(f"Could not reach the remote service: {exc.reason}") from exc
+        raise FCMRegistrationError(
+            f"Could not reach the remote service: {exc.reason}"
+        ) from exc
+
     if not 200 <= status < 300:
-        raise FCMRegistrationError(f"Remote service returned HTTP {status}: {raw[:160]}")
-    if not raw.strip() and allow_empty:
-        return {}
+        raise FCMRegistrationError(
+            f"Remote service returned HTTP {status}: {raw[:160]}"
+        )
+    if not raw.strip():
+        if allow_empty:
+            return {}
+        raise FCMRegistrationError(
+            "Remote service returned an empty response."
+        )
+
     try:
         decoded = json.loads(raw)
     except json.JSONDecodeError as exc:
-        if allow_empty:
-            return {}
-        raise FCMRegistrationError("Remote service returned invalid JSON.") from exc
+        raise FCMRegistrationError(
+            f"Remote service returned invalid JSON: {raw[:160]}"
+        ) from exc
     if not isinstance(decoded, dict):
-        raise FCMRegistrationError("Remote service returned an unexpected response.")
+        raise FCMRegistrationError(
+            "Remote service returned an unexpected response."
+        )
     return decoded
+
 
 
 class _RustPlusAuthBridge:
