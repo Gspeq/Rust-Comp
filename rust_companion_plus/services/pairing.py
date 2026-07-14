@@ -1,4 +1,5 @@
 from __future__ import annotations
+from rust_companion_plus.config import APP_DATA_DIR
 
 import json
 import queue
@@ -51,13 +52,12 @@ class PairingRecord:
         return asdict(self)
 
 
-def parse_pairing_payload(value: Any, *, source: str = "pairing_payload") -> PairingRecord | None:
-    """Extract Rust+ pairing details from JSON, nested notification data, or a URL.
-
-    Rust+ notifications commonly expose ``ip``, ``port``, ``playerId`` and
-    ``playerToken``. This parser is intentionally tolerant because notification
-    wrappers differ between libraries and versions.
-    """
+def parse_pairing_payload(
+    value: Any,
+    *,
+    source: str = "pairing_payload",
+) -> PairingRecord | None:
+    # Merge Rust+ fields that may be split across notification wrappers.
     if value is None:
         return None
 
@@ -93,10 +93,12 @@ def parse_pairing_payload(value: Any, *, source: str = "pairing_payload") -> Pai
     if not mappings:
         return None
 
-    best: PairingRecord | None = None
-    best_score = -1
+    candidates: list[tuple[int, PairingRecord]] = []
     for mapping in mappings:
-        normalized = {_normalize_key(key): child for key, child in mapping.items()}
+        normalized = {
+            _normalize_key(key): child
+            for key, child in mapping.items()
+        }
         record = PairingRecord(
             host=_first_text(normalized, _HOST_KEYS),
             port=_first_int(normalized, _PORT_KEYS),
@@ -111,17 +113,22 @@ def parse_pairing_payload(value: Any, *, source: str = "pairing_payload") -> Pai
                 4 if record.host else 0,
                 4 if record.port else 0,
                 3 if record.steam_id else 0,
-                4 if record.player_token else 0,
+                5 if record.player_token else 0,
                 1 if record.server_name else 0,
             )
         )
-        if score > best_score:
-            best = record
-            best_score = score
+        if score > 0:
+            candidates.append((score, record))
 
-    if best is None or best_score <= 0:
+    if not candidates:
         return None
-    return best
+
+    candidates.sort(key=lambda row: row[0], reverse=True)
+    merged = candidates[0][1]
+    for _score, candidate in candidates[1:]:
+        merged = _merge_pairing_records(merged, candidate)
+    return merged
+
 
 
 def load_fcm_config(value: str | Path | dict[str, Any]) -> dict[str, Any] | None:
@@ -138,8 +145,75 @@ def load_fcm_config(value: str | Path | dict[str, Any]) -> dict[str, Any] | None
     return payload if isinstance(payload, dict) and isinstance(payload.get("fcm_credentials"), dict) else None
 
 
+def _merge_pairing_records(
+    current: PairingRecord | None,
+    incoming: PairingRecord | None,
+) -> PairingRecord:
+    if current is None and incoming is None:
+        return PairingRecord()
+    if current is None:
+        assert incoming is not None
+        return PairingRecord(
+            host=incoming.host,
+            port=incoming.port,
+            steam_id=incoming.steam_id,
+            player_token=incoming.player_token,
+            server_name=incoming.server_name,
+            source=incoming.source,
+            raw=incoming.raw,
+        )
+    if incoming is None:
+        return current
+
+    # A later record carrying the final token owns the Rust+ endpoint.
+    prefer_incoming_endpoint = bool(incoming.player_token)
+    host = (
+        incoming.host
+        if prefer_incoming_endpoint and incoming.host
+        else current.host or incoming.host
+    )
+    port = (
+        incoming.port
+        if prefer_incoming_endpoint and incoming.port
+        else current.port or incoming.port
+    )
+    return PairingRecord(
+        host=host,
+        port=port,
+        steam_id=incoming.steam_id or current.steam_id,
+        player_token=incoming.player_token or current.player_token,
+        server_name=incoming.server_name or current.server_name,
+        source=incoming.source or current.source,
+        raw=incoming.raw or current.raw,
+    )
+
+
+def _pairing_record_has_signal(record: PairingRecord | None) -> bool:
+    if record is None:
+        return False
+    return bool(
+        record.host
+        or record.port
+        or record.steam_id
+        or record.player_token
+        or record.server_name
+    )
+
+
+def _pairing_missing_fields(record: PairingRecord) -> list[str]:
+    missing: list[str] = []
+    if not record.host:
+        missing.append("Rust+ host")
+    if not record.port:
+        missing.append("Rust+ port")
+    if not record.steam_id:
+        missing.append("Steam ID")
+    if not record.player_token:
+        missing.append("player token")
+    return missing
+
 class PairingNotificationInbox:
-    """Queue Rust+ pairing notifications received by the rustplus FCM listener."""
+    # Supervise and correlate multi-stage Rust+ pairing notifications.
 
     def __init__(self, fcm_config: dict[str, Any]) -> None:
         self.fcm_config = fcm_config
@@ -147,32 +221,125 @@ class PairingNotificationInbox:
         self.errors: queue.Queue[Exception] = queue.Queue()
         self._started = False
         self._listener: Any = None
+        self._thread: threading.Thread | None = None
+        self._ready = threading.Event()
+        self._fatal_error: Exception | None = None
 
     def start(self) -> None:
         if self._started:
             return
         self._started = True
         try:
-            from rustplus import FCMListener
+            import logging
+            from push_receiver import PushReceiver
         except ImportError as exc:
+            self._fatal_error = exc
             self.errors.put(exc)
             return
 
         inbox = self
 
-        class Listener(FCMListener):
-            def on_notification(self, obj, notification, data_message) -> None:  # type: ignore[override]
-                for candidate in (data_message, notification, obj):
-                    record = parse_pairing_payload(candidate, source="rustplus_fcm_notification")
-                    if record is not None and record.port and record.player_token:
-                        inbox.records.put(record)
-                        return
+        def on_notification(
+            obj: Any,
+            notification: Any,
+            data_message: Any,
+        ) -> None:
+            print(
+                "[RUST+ PUSH] Notification received; "
+                "decoding and correlating pairing data..."
+            )
+            try:
+                _append_payload_diagnostic(notification, data_message, obj)
+            except Exception as diagnostic_error:
+                print(
+                    "[RUST+ DEBUG] Safe payload-structure capture failed: "
+                    f"{type(diagnostic_error).__name__}: {diagnostic_error}"
+                )
 
-        try:
-            self._listener = Listener(self.fcm_config)
-            self._listener.start(daemon=True)
-        except Exception as exc:  # library/network failures are reported to the launcher
-            self.errors.put(exc)
+            combined: PairingRecord | None = None
+            for candidate in (notification, data_message, obj):
+                record = parse_pairing_payload(
+                    candidate,
+                    source="rustplus_fcm_notification",
+                )
+                combined = _merge_pairing_records(combined, record)
+
+            if not _pairing_record_has_signal(combined):
+                print(
+                    "[RUST+ PUSH] Notification contained no usable "
+                    "Rust+ pairing fields."
+                )
+                return
+
+            assert combined is not None
+            inbox.records.put(combined)
+            server = combined.server_name or combined.host or "unknown server"
+            if combined.is_complete():
+                print(
+                    "[RUST+ PUSH] Complete pairing authorization decoded for "
+                    f"{server}."
+                )
+            else:
+                missing = ", ".join(_pairing_missing_fields(combined))
+                endpoint = f"{combined.host or '?'}:{combined.port or '?'}"
+                print(
+                    "[RUST+ PUSH] Fresh pairing request observed for "
+                    f"{server} at {endpoint}; waiting for {missing}."
+                )
+
+        class ReadyHandler(logging.Handler):
+            def emit(self, record: logging.LogRecord) -> None:
+                if "Received login response" in record.getMessage():
+                    inbox._ready.set()
+
+        def worker() -> None:
+            logger = logging.getLogger("push_receiver")
+            old_level = logger.level
+            old_propagate = logger.propagate
+            handler = ReadyHandler()
+            logger.addHandler(handler)
+            logger.setLevel(logging.INFO)
+            logger.propagate = False
+            try:
+                credentials = self.fcm_config.get("fcm_credentials")
+                if not isinstance(credentials, dict):
+                    raise RuntimeError("Saved FCM credentials are missing.")
+                self._listener = PushReceiver(credentials=credentials)
+                self._listener.listen(callback=on_notification)
+            except Exception as exc:
+                self._fatal_error = exc
+                self.errors.put(exc)
+            finally:
+                logger.removeHandler(handler)
+                logger.setLevel(old_level)
+                logger.propagate = old_propagate
+
+        self._thread = threading.Thread(
+            target=worker,
+            name="rustplus-supervised-push-receiver",
+            daemon=True,
+        )
+        self._thread.start()
+
+
+    def wait_until_ready(self, timeout: float = 25.0) -> None:
+        self.start()
+        deadline = __import__("time").monotonic() + timeout
+        while not self._ready.wait(0.25):
+            if self._fatal_error is not None:
+                raise RuntimeError(
+                    f"Rust+ notification listener failed: {self._fatal_error}"
+                ) from self._fatal_error
+            if self._thread is not None and not self._thread.is_alive():
+                raise RuntimeError(
+                    "Rust+ notification listener stopped before connecting."
+                )
+            if __import__("time").monotonic() >= deadline:
+                raise RuntimeError(
+                    "The Google push connection did not become ready. "
+                    "A firewall, VPN, router, or network may be blocking "
+                    "mtalk.google.com on TCP port 5228."
+                )
 
     def wait_for(
         self,
@@ -182,29 +349,288 @@ class PairingNotificationInbox:
         process_alive: Callable[[], bool] | None = None,
     ) -> PairingRecord | None:
         self.start()
-        deadline = None if timeout is None else __import__("time").monotonic() + timeout
+        clock = __import__("time")
+        deadline = None if timeout is None else clock.monotonic() + timeout
+        aggregate: PairingRecord | None = None
+        first_partial_at: float | None = None
+        last_reminder_at = clock.monotonic()
+
         while True:
             if process_alive is not None and not process_alive():
                 return None
+
             try:
                 error = self.errors.get_nowait()
             except queue.Empty:
                 pass
             else:
-                raise RuntimeError(f"Rust+ notification listener failed: {error}") from error
+                raise RuntimeError(
+                    f"Rust+ notification listener failed: {error}"
+                ) from error
 
             remaining = 1.0
             if deadline is not None:
-                remaining = max(0.0, min(1.0, deadline - __import__("time").monotonic()))
+                remaining = max(
+                    0.0,
+                    min(1.0, deadline - clock.monotonic()),
+                )
                 if remaining <= 0:
                     return None
+
             try:
                 record = self.records.get(timeout=remaining)
             except queue.Empty:
+                now = clock.monotonic()
+                if (
+                    aggregate is not None
+                    and not aggregate.is_complete()
+                    and now - last_reminder_at >= 20.0
+                ):
+                    elapsed = int(now - (first_partial_at or now))
+                    print(
+                        "[RUST+ PUSH] Pairing request is still active "
+                        f"after {elapsed}s; waiting for the final player token."
+                    )
+                    print(
+                        "[RUST+ PUSH] If the phone already shows paired, "
+                        "leave this receiver open and use Retry/Resend in Rust "
+                        "once when available."
+                    )
+                    last_reminder_at = now
                 continue
-            if not host or record.matches_host(host):
-                return record
 
+            if (
+                aggregate is not None
+                and aggregate.steam_id
+                and record.steam_id
+                and aggregate.steam_id != record.steam_id
+            ):
+                print(
+                    "[RUST+ PUSH] Ignored a fresh notification for a "
+                    "different Steam account."
+                )
+                continue
+
+            aggregate = _merge_pairing_records(aggregate, record)
+
+            if aggregate.is_complete():
+                if host and aggregate.host and not aggregate.matches_host(host):
+                    print(
+                        "[RUST+ PUSH] Companion endpoint "
+                        f"{aggregate.host}:{aggregate.port} differs from "
+                        f"game endpoint {host}; forwarding it for live "
+                        "Rust+ validation."
+                    )
+                return aggregate
+
+            if first_partial_at is None:
+                first_partial_at = clock.monotonic()
+
+            missing = ", ".join(_pairing_missing_fields(aggregate))
+            endpoint = f"{aggregate.host or '?'}:{aggregate.port or '?'}"
+            print(
+                "[RUST+ PUSH] Pairing handshake started for "
+                f"{aggregate.server_name or endpoint}; still missing {missing}."
+            )
+            print(
+                "[RUST+ PUSH] Keep the receiver open while completing the "
+                "phone confirmation. A later push will be merged automatically."
+            )
+
+
+
+
+def _safe_payload_inventory(
+    value: Any,
+    *,
+    limit: int = 180,
+) -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    sensitive_fragments = (
+        "token",
+        "auth",
+        "password",
+        "cookie",
+        "secret",
+        "credential",
+        "session",
+    )
+    known_fields = {
+        "ip",
+        "host",
+        "serverip",
+        "server_ip",
+        "address",
+        "port",
+        "appport",
+        "app_port",
+        "app.port",
+        "rustappport",
+        "rust_app_port",
+        "companionport",
+        "companion_port",
+        "name",
+        "servername",
+        "server_name",
+        "playerid",
+        "player_id",
+        "steamid",
+        "steam_id",
+        "playertoken",
+        "player_token",
+    }
+    seen: set[int] = set()
+
+    def walk(child: Any, path: str, depth: int) -> None:
+        if len(rows) >= limit or depth > 12:
+            return
+
+        if isinstance(child, (dict, list, tuple)) or hasattr(child, "__dict__"):
+            identity = id(child)
+            if identity in seen:
+                rows.append(
+                    {
+                        "path": path,
+                        "type": type(child).__name__,
+                        "cycle": True,
+                    }
+                )
+                return
+            seen.add(identity)
+
+        if isinstance(child, dict):
+            rows.append(
+                {
+                    "path": path,
+                    "type": "dict",
+                    "keys": sorted(str(key) for key in child.keys())[:80],
+                    "length": len(child),
+                }
+            )
+            for key, nested in child.items():
+                walk(nested, f"{path}.{key}", depth + 1)
+            return
+
+        if isinstance(child, (list, tuple)):
+            rows.append(
+                {
+                    "path": path,
+                    "type": type(child).__name__,
+                    "length": len(child),
+                }
+            )
+            for index, nested in enumerate(child[:40]):
+                walk(nested, f"{path}[{index}]", depth + 1)
+            return
+
+        if isinstance(child, (bytes, bytearray)):
+            child = bytes(child).decode("utf-8", errors="replace")
+
+        if isinstance(child, str):
+            text = child.strip()
+            leaf = path.rsplit(".", 1)[-1].casefold()
+            normalized_leaf = _normalize_key(leaf)
+            sensitive = any(fragment in leaf for fragment in sensitive_fragments)
+            row: dict[str, Any] = {
+                "path": path,
+                "type": "str",
+                "length": len(child),
+                "sensitive": sensitive,
+                "digit_count": sum(character.isdigit() for character in text),
+            }
+            if normalized_leaf in known_fields:
+                if sensitive or "token" in normalized_leaf:
+                    row["value"] = "<present>" if text else "<empty>"
+                elif normalized_leaf in {
+                    "playerid",
+                    "player_id",
+                    "steamid",
+                    "steam_id",
+                }:
+                    row["value"] = f"...{text[-6:]}" if text else "<empty>"
+                else:
+                    row["value"] = text[:180]
+
+            decoded = None
+            if (
+                (text.startswith("{") and text.endswith("}"))
+                or (text.startswith("[") and text.endswith("]"))
+            ):
+                try:
+                    decoded = json.loads(text)
+                except json.JSONDecodeError:
+                    row["json_error"] = True
+                else:
+                    row["json_decoded"] = True
+                    row["json_type"] = type(decoded).__name__
+            else:
+                names = re.findall(
+                    r"[\"']([A-Za-z0-9_.-]{1,80})[\"']\s*:",
+                    text,
+                )
+                if names:
+                    row["embedded_field_names"] = sorted(set(names))[:80]
+
+            rows.append(row)
+            if decoded is not None:
+                walk(decoded, f"{path}<json>", depth + 1)
+            return
+
+        leaf = path.rsplit(".", 1)[-1].casefold()
+        sensitive = any(fragment in leaf for fragment in sensitive_fragments)
+        row = {
+            "path": path,
+            "type": type(child).__name__,
+            "sensitive": sensitive,
+        }
+        if isinstance(child, (int, float, bool)) or child is None:
+            normalized_leaf = _normalize_key(leaf)
+            if sensitive or "token" in normalized_leaf:
+                row["value"] = "<present>" if child else "<empty>"
+            elif normalized_leaf in known_fields:
+                value_text = str(child)
+                if normalized_leaf in {
+                    "playerid",
+                    "player_id",
+                    "steamid",
+                    "steam_id",
+                }:
+                    row["value"] = f"...{value_text[-6:]}" if value_text else "<empty>"
+                else:
+                    row["value"] = child
+        rows.append(row)
+
+        if hasattr(child, "__dict__"):
+            try:
+                walk(vars(child), f"{path}<vars>", depth + 1)
+            except TypeError:
+                pass
+
+    walk(value, "$", 0)
+    return rows
+
+
+def _append_payload_diagnostic(
+    notification: Any,
+    data_message: Any,
+    obj: Any,
+) -> None:
+    debug_dir = APP_DATA_DIR / "debug"
+    debug_dir.mkdir(parents=True, exist_ok=True)
+    path = debug_dir / "pairing-payload-structure.jsonl"
+    datetime_module = __import__("datetime")
+    payload = {
+        "captured_at": datetime_module.datetime.now(
+            datetime_module.timezone.utc
+        ).isoformat(timespec="milliseconds"),
+        "notification": _safe_payload_inventory(notification),
+        "data_message": _safe_payload_inventory(data_message),
+        "object": _safe_payload_inventory(obj),
+    }
+    with path.open("a", encoding="utf-8") as handle:
+        handle.write(
+            json.dumps(payload, ensure_ascii=False, sort_keys=True) + "\n"
+        )
 
 def save_fcm_config(path: Path, config: dict[str, Any]) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -213,19 +639,87 @@ def save_fcm_config(path: Path, config: dict[str, Any]) -> None:
     temporary.replace(path)
 
 
-def _walk_mappings(value: Any):
+def _walk_mappings(
+    value: Any,
+    *,
+    _depth: int = 0,
+    _seen: set[int] | None = None,
+):
+    # Rust+ wrappers frequently store another JSON object inside body/message
+    # strings. Decode those strings recursively instead of treating them as
+    # opaque scalar values.
+    if _depth > 12:
+        return
+    if _seen is None:
+        _seen = set()
+
+    if isinstance(value, (dict, list, tuple)) or hasattr(value, "__dict__"):
+        identity = id(value)
+        if identity in _seen:
+            return
+        _seen.add(identity)
+
     if isinstance(value, dict):
         yield value
         for child in value.values():
-            yield from _walk_mappings(child)
-    elif isinstance(value, (list, tuple)):
+            yield from _walk_mappings(
+                child,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+        return
+
+    if isinstance(value, (list, tuple)):
         for child in value:
-            yield from _walk_mappings(child)
-    elif hasattr(value, "__dict__"):
+            yield from _walk_mappings(
+                child,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+        return
+
+    if isinstance(value, (bytes, bytearray)):
+        value = bytes(value).decode("utf-8", errors="replace")
+
+    if isinstance(value, str):
+        text = value.strip()
+        if not text:
+            return
+        if (
+            (text.startswith("{") and text.endswith("}"))
+            or (text.startswith("[") and text.endswith("]"))
+        ):
+            try:
+                decoded = json.loads(text)
+            except json.JSONDecodeError:
+                decoded = None
+            if decoded is not None:
+                yield from _walk_mappings(
+                    decoded,
+                    _depth=_depth + 1,
+                    _seen=_seen,
+                )
+                return
+        decoded_url = _payload_from_url(text)
+        if decoded_url:
+            yield from _walk_mappings(
+                decoded_url,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+        return
+
+    if hasattr(value, "__dict__"):
         try:
-            yield from _walk_mappings(vars(value))
+            payload = vars(value)
         except TypeError:
             return
+        yield from _walk_mappings(
+            payload,
+            _depth=_depth + 1,
+            _seen=_seen,
+        )
+
 
 
 def _payload_from_url(text: str) -> dict[str, Any] | None:

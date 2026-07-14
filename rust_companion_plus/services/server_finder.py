@@ -1,4 +1,5 @@
 from __future__ import annotations
+import base64
 
 import ipaddress
 import json
@@ -702,7 +703,10 @@ class RustServerFinder:
         if app_port:
             report.debug.append(f"BattleMetrics published Rust+ companion port {app_port}")
 
-    def _resolve_rust_app_port(self, report: DetectionReport) -> None:
+    def _resolve_rust_app_port(
+        self,
+        report: DetectionReport,
+    ) -> None:
         selected = report.selected
         if selected is None:
             return
@@ -714,16 +718,21 @@ class RustServerFinder:
                 selected.metadata.get("rust_app_port_source") or "rust_log"
             )
             report.debug.append(
-                f"Rust+ companion port {log_port} accepted from {report.rust_app_port_source}"
+                f"Rust+ companion port {log_port} accepted from "
+                f"{report.rust_app_port_source}"
             )
             return
 
-        battlemetrics_port = _coerce_int(report.battlemetrics.get("rust_app_port"))
+        battlemetrics_port = _coerce_int(
+            report.battlemetrics.get("rust_app_port")
+        )
         if battlemetrics_port:
             report.rust_app_port = battlemetrics_port
             report.rust_app_port_source = "battlemetrics_exact_match"
             report.debug.append(
-                f"Rust+ companion port {battlemetrics_port} accepted from the exact BattleMetrics server record"
+                "Rust+ companion port "
+                f"{battlemetrics_port} accepted from the exact "
+                "BattleMetrics server record"
             )
             return
 
@@ -743,31 +752,68 @@ class RustServerFinder:
                 rules = _query_a2s_rules(selected.host, query_port)
             except (OSError, ValueError) as exc:
                 report.debug.append(
-                    f"A2S rules query failed for {selected.host}:{query_port}: {exc}"
+                    "A2S rules query failed for "
+                    f"{selected.host}:{query_port}: {exc}"
                 )
                 continue
             if not rules:
                 report.debug.append(
-                    f"A2S rules query returned no rules for {selected.host}:{query_port}"
+                    "A2S rules query returned no rules for "
+                    f"{selected.host}:{query_port}"
                 )
                 continue
+
             report.a2s_rules = rules
             app_port = _find_int_by_key(rules, APP_PORT_KEYS)
             if app_port:
                 report.rust_app_port = app_port
                 report.rust_app_port_source = f"a2s_rules:{query_port}"
                 report.debug.append(
-                    f"Rust+ companion port {app_port} discovered through A2S_RULES on query port {query_port}"
+                    "Rust+ companion port "
+                    f"{app_port} discovered through A2S_RULES "
+                    f"on query port {query_port}"
                 )
                 return
             report.debug.append(
-                f"A2S rules were readable on {query_port}, but no Rust+ app-port rule was published"
+                "A2S rules were readable on "
+                f"{query_port}, but no Rust+ app-port rule was published"
+            )
+
+        official_candidate = int(selected.port) + 67
+        if 10000 <= official_candidate <= 65535:
+            report.debug.append(
+                "Rust+ official-default candidate: "
+                f"{selected.host}:{official_candidate} "
+                "(game port + 67); starting one WebSocket probe"
+            )
+            succeeded, detail = _probe_rustplus_websocket(
+                selected.host,
+                official_candidate,
+            )
+            report.debug.append(
+                "Rust+ official-default WebSocket probe "
+                f"{'succeeded' if succeeded else 'failed'} for "
+                f"{selected.host}:{official_candidate}: {detail}"
+            )
+            if succeeded:
+                report.rust_app_port = official_candidate
+                report.rust_app_port_source = (
+                    "facepunch_default_plus_67_websocket_probe"
+                )
+                return
+        else:
+            report.debug.append(
+                "Rust+ official-default candidate was invalid: "
+                f"game port {selected.port} + 67"
             )
 
         report.warnings.append(
-            "Rust+ companion port was not published in the current log, exact BattleMetrics record, "
-            "or A2S server rules. The launcher will request pairing data or a manual port before opening the GUI."
+            "Rust+ companion port was not published in the current "
+            "log, exact BattleMetrics record, or A2S rules, and the "
+            "verified Facepunch default candidate did not respond as "
+            "a WebSocket. Pairing data remains authoritative."
         )
+
 
     def _detected_server_payload(self, report: DetectionReport) -> dict[str, Any]:
         assert report.selected is not None
@@ -790,6 +836,59 @@ class RustServerFinder:
             "warnings": report.warnings,
         }
 
+
+def _probe_rustplus_websocket(
+    host: str,
+    port: int,
+    *,
+    timeout: float = 1.75,
+) -> tuple[bool, str]:
+    # Verify one explicit candidate with a standard WebSocket upgrade.
+    # This is not a range scan and sends no Rust+ credentials.
+    if not host or not 10000 <= int(port) <= 65535:
+        return False, "candidate is outside Rust+ port requirements"
+
+    key = base64.b64encode(os.urandom(16)).decode("ascii")
+    request = (
+        "GET / HTTP/1.1\r\n"
+        f"Host: {host}:{int(port)}\r\n"
+        "Upgrade: websocket\r\n"
+        "Connection: Upgrade\r\n"
+        f"Sec-WebSocket-Key: {key}\r\n"
+        "Sec-WebSocket-Version: 13\r\n"
+        "User-Agent: RustCompanionPlus/0.3\r\n"
+        "\r\n"
+    ).encode("ascii")
+
+    last_error = "no address succeeded"
+    try:
+        addresses = socket.getaddrinfo(
+            host,
+            int(port),
+            type=socket.SOCK_STREAM,
+        )
+    except OSError as exc:
+        return False, f"DNS/address resolution failed: {exc}"
+
+    for family, socktype, protocol, _, address in addresses:
+        try:
+            with socket.socket(family, socktype, protocol) as client:
+                client.settimeout(timeout)
+                client.connect(address)
+                client.sendall(request)
+                response = client.recv(4096)
+        except OSError as exc:
+            last_error = str(exc)
+            continue
+
+        header = response.decode("latin-1", errors="replace")
+        first_line = header.splitlines()[0] if header else ""
+        lowered = header.casefold()
+        if " 101 " in f" {first_line} " and "upgrade: websocket" in lowered:
+            return True, first_line
+        last_error = first_line or "endpoint closed without an HTTP response"
+
+    return False, last_error
 
 def _query_a2s_rules(host: str, port: int, *, timeout: float = 1.75) -> dict[str, str]:
     """Read Source A2S_RULES without scanning or guessing arbitrary ports."""
