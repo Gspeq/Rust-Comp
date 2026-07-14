@@ -29,6 +29,28 @@ class PairingPayloadTests(unittest.TestCase):
         self.assertEqual(76561199121283118, record.steam_id)
         self.assertEqual(123456789, record.player_token)
 
+    def test_notification_body_json_string_is_parsed(self) -> None:
+        payload = {
+            "title": "Tap to pair",
+            "body": json.dumps(
+                {
+                    "ip": "64.40.8.112",
+                    "port": "28082",
+                    "playerId": "76561199121283118",
+                    "playerToken": "987654321",
+                    "name": "WarBandits",
+                }
+            ),
+        }
+        record = parse_pairing_payload(payload)
+        self.assertIsNotNone(record)
+        assert record is not None
+        self.assertTrue(record.is_complete())
+        self.assertEqual("64.40.8.112", record.host)
+        self.assertEqual(28082, record.port)
+        self.assertEqual(76561199121283118, record.steam_id)
+        self.assertEqual(987654321, record.player_token)
+
     def test_pairing_json_file_is_parsed(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             path = Path(temporary) / "pairing.json"

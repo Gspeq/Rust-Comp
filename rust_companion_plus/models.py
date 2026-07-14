@@ -10,6 +10,16 @@ def utc_now_iso() -> str:
     return datetime.now(timezone.utc).isoformat(timespec="seconds")
 
 
+def normalize_player_token(value: Any) -> int:
+    parsed = int(value or 0)
+    if parsed == 0:
+        return 0
+    if -(2**31) <= parsed <= (2**31 - 1):
+        return parsed
+    if (2**31) <= parsed <= (2**32 - 1):
+        return parsed - (2**32)
+    raise ValueError("Rust+ player token must fit a signed 32-bit integer")
+
 @dataclass(slots=True)
 class RustCredentials:
     host: str = ""
@@ -18,7 +28,12 @@ class RustCredentials:
     player_token: int = 0
 
     def is_complete(self) -> bool:
-        return bool(self.host and self.port and self.steam_id and self.player_token)
+        return bool(
+            self.host
+            and 1 <= int(self.port) <= 65535
+            and int(self.steam_id) > 0
+            and int(self.player_token) != 0
+        )
 
     def to_dict(self) -> dict[str, Any]:
         return asdict(self)
@@ -26,12 +41,19 @@ class RustCredentials:
     @classmethod
     def from_dict(cls, data: dict[str, Any] | None) -> "RustCredentials":
         data = data or {}
+        try:
+            player_token = normalize_player_token(
+                data.get("player_token", 0)
+            )
+        except (TypeError, ValueError):
+            player_token = 0
         return cls(
             host=str(data.get("host", "")),
             port=int(data.get("port", 0) or 0),
             steam_id=int(data.get("steam_id", 0) or 0),
-            player_token=int(data.get("player_token", 0) or 0),
+            player_token=player_token,
         )
+
 
 
 @dataclass(slots=True)

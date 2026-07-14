@@ -1,4 +1,5 @@
-﻿from __future__ import annotations
+from __future__ import annotations
+import queue
 
 import argparse
 import os
@@ -9,7 +10,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from rust_companion_plus.config import APP_DATA_DIR, FCM_CONFIG_PATH
-from rust_companion_plus.models import RustCredentials
+from rust_companion_plus.models import RustCredentials, normalize_player_token
 from rust_companion_plus.services.pairing import (
     PairingNotificationInbox,
     PairingRecord,
@@ -17,7 +18,11 @@ from rust_companion_plus.services.pairing import (
     parse_pairing_payload,
     save_fcm_config,
 )
-from rust_companion_plus.services.fcm_registration import request_or_register_fcm_config
+from rust_companion_plus.services.fcm_registration import (
+    FCMRegistrationError,
+    refresh_fcm_registration,
+    request_or_register_fcm_config,
+)
 from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
 from rust_companion_plus.storage import JsonStore
@@ -237,7 +242,10 @@ def _print_server_lock(report: DetectionReport) -> None:
     _rule("=", color=GREEN)
 
 
-def _load_current_profile(store: JsonStore, report: DetectionReport) -> tuple[str, RustCredentials]:
+def _load_current_profile(
+    store: JsonStore,
+    report: DetectionReport,
+) -> tuple[str, RustCredentials]:
     assert report.selected is not None
     selected = report.selected
     key = _profile_key(selected.host, selected.port)
@@ -246,23 +254,47 @@ def _load_current_profile(store: JsonStore, report: DetectionReport) -> tuple[st
     legacy = RustCredentials.from_dict(store.get("credentials", {}))
     saved = RustCredentials.from_dict(profiles.get(key, {}))
 
-    steam_id = saved.steam_id or int(identity.get("steam_id", 0) or 0) or legacy.steam_id
+    steam_id = (
+        saved.steam_id
+        or int(identity.get("steam_id", 0) or 0)
+        or legacy.steam_id
+    )
     current = RustCredentials(
-        host=selected.host,
+        host=saved.host or selected.host,
         port=saved.port,
         steam_id=steam_id,
         player_token=saved.player_token,
     )
+
     if report.rust_app_port:
-        if current.port and current.port != report.rust_app_port:
+        saved_split_endpoint = bool(
+            saved.player_token
+            and saved.host
+            and saved.host.casefold() != selected.host.casefold()
+        )
+        if saved_split_endpoint:
             print(
                 _paint(
-                    f"[PORT UPDATE] Saved port {current.port} changed to published port {report.rust_app_port}.",
-                    YELLOW,
+                    "[PROFILE] Retaining the saved verified Rust+ companion "
+                    f"endpoint {saved.host}:{saved.port}; automatic discovery "
+                    "describes the game endpoint.",
+                    GRAY,
                 )
             )
-        current.port = report.rust_app_port
+        else:
+            if current.port and current.port != report.rust_app_port:
+                print(
+                    _paint(
+                        f"[PORT UPDATE] Saved port {current.port} changed to "
+                        f"published port {report.rust_app_port}.",
+                        YELLOW,
+                    )
+                )
+            current.port = report.rust_app_port
+
     return key, current
+
+
 
 
 def _missing_fields(current: RustCredentials) -> list[str]:
@@ -290,26 +322,75 @@ def _save_profile(
     store.set("credentials", current.to_dict())
     store.set("player_identity", {"steam_id": current.steam_id})
 
-    metadata = dict(store.get("credential_profile_metadata", {}) or {})
+    metadata = dict(
+        store.get("credential_profile_metadata", {}) or {}
+    )
     metadata[key] = {
-        "updated_at": datetime.now().astimezone().isoformat(timespec="seconds"),
+        "updated_at": datetime.now().astimezone().isoformat(
+            timespec="seconds"
+        ),
         "game_endpoint": key,
-        "rust_app_port_source": report.rust_app_port_source or pairing_source or "saved/manual",
+        "rustplus_endpoint": (
+            f"{current.host}:{current.port}"
+            if current.host and current.port
+            else ""
+        ),
+        "rust_app_port_source": (
+            report.rust_app_port_source
+            or pairing_source
+            or "saved/manual"
+        ),
         "pairing_source": pairing_source,
-        "battlemetrics_id": str(report.battlemetrics.get("id") or ""),
+        "battlemetrics_id": str(
+            report.battlemetrics.get("id") or ""
+        ),
     }
     store.set("credential_profile_metadata", metadata)
 
 
-def _apply_pairing_record(current: RustCredentials, record: PairingRecord, expected_host: str) -> bool:
-    if record.host and not record.matches_host(expected_host):
-        print(_paint(f"[REJECTED] Pairing data is for {record.host}, not {expected_host}.", RED))
+
+def _apply_pairing_record(
+    current: RustCredentials,
+    record: PairingRecord,
+    expected_host: str,
+) -> bool:
+    companion_host = str(
+        record.host or expected_host or ""
+    ).strip().strip("[]")
+    if not companion_host:
+        print(
+            _paint(
+                "[REJECTED] Pairing data contained no server host.",
+                RED,
+            )
+        )
         return False
-    current.host = expected_host
+
+    if record.host and not record.matches_host(expected_host):
+        print(
+            _paint(
+                "[ENDPOINT SPLIT] The game endpoint is "
+                f"{expected_host}; Rust+ supplied companion endpoint "
+                f"{record.host}:{record.port}.",
+                YELLOW,
+            )
+        )
+        print(
+            _paint(
+                "This is valid on proxied or multi-endpoint servers. "
+                "The launcher will verify the Rust+ socket before opening "
+                "the GUI.",
+                WHITE,
+            )
+        )
+
+    current.host = companion_host
     current.port = record.port or current.port
     current.steam_id = record.steam_id or current.steam_id
     current.player_token = record.player_token or current.player_token
     return True
+
+
 
 
 def _import_pairing_text(current: RustCredentials, expected_host: str) -> str:
@@ -353,24 +434,155 @@ def _listen_for_pairing(
     config = _find_fcm_config() or _request_fcm_config()
     if config is None:
         return ""
-    print()
-    print(_paint("PAIRING RECEIVER ARMED", CYAN, bold=True))
-    print(_paint("In Rust, open the Rust+ menu and choose Pair With Server.", WHITE))
-    print(_paint("If already paired, unpair and pair again to send a fresh notification.", YELLOW))
-    print(_paint("Waiting for a notification matching this server. Ctrl+C cancels.", GRAY))
 
+    try:
+        refresh_fcm_registration(
+            config,
+            status=lambda message: print(
+                f"[PAIRING SETUP] {message}"
+            ),
+        )
+    except FCMRegistrationError as exc:
+        print(
+            _paint(
+                "[PAIRING SETUP WARNING] The saved receiver could not be "
+                f"refreshed: {exc}",
+                YELLOW,
+            )
+        )
+        print(
+            _paint(
+                "Continuing with the existing receiver registration.",
+                GRAY,
+            )
+        )
+
+    print()
+    print(_paint("PAIRING RECEIVER CONNECTING", CYAN, bold=True))
     inbox = PairingNotificationInbox(config)
+    inbox.start()
+    ready = inbox.wait_until_ready(timeout=12.0)
+    if ready:
+        print(
+            _paint(
+                "PAIRING RECEIVER CONNECTED TO GOOGLE PUSH",
+                GREEN,
+                bold=True,
+            )
+        )
+    else:
+        print(
+            _paint(
+                "[PAIRING RECEIVER] Login readiness was not confirmed, "
+                "but the listener thread is alive. Extending stale-push "
+                "cleanup before arming.",
+                YELLOW,
+            )
+        )
+
+    print(
+        _paint(
+            "[FRESHNESS GATE] Clearing queued or replayed Rust+ pushes...",
+            YELLOW,
+        )
+    )
+    print(
+        _paint(
+            "Keep the official Rust+ phone paired. Do not press Pair, "
+            "Retry, or Resend during this short synchronization.",
+            WHITE,
+        )
+    )
+    discarded = inbox.drain_replayed(
+        quiet_period=2.0 if ready else 3.0,
+        max_wait=12.0 if ready else 16.0,
+        process_alive=lambda: (
+            finder.get_rust_process_session().running
+        ),
+    )
+
+    print()
+    print(
+        _paint(
+            "PAIRING RECEIVER ARMED FOR A FRESH REQUEST",
+            GREEN,
+            bold=True,
+        )
+    )
+    print(_paint("No Enter key is required.", GREEN, bold=True))
+    print(
+        _paint(
+            "NOW perform exactly one action in Rust:",
+            WHITE,
+            bold=True,
+        )
+    )
+    print(
+        "  - New server: choose Pair With Server and complete any normal "
+        "phone confirmation."
+    )
+    print(
+        "  - Already paired: choose Retry Pairing or Resend Pairing "
+        "Request once."
+    )
+    print(
+        _paint(
+            "Do not unpair or disable Rust+ on the phone. The desktop "
+            "receiver is an additional registered device.",
+            YELLOW,
+        )
+    )
+    if discarded:
+        print(
+            _paint(
+                f"[FRESHNESS GATE] Discarded {discarded} queued "
+                "pairing payload(s).",
+                YELLOW,
+            )
+        )
+    print(
+        _paint(
+            "Waiting for the fresh request and final player token. "
+            "Ctrl+C cancels.",
+            GRAY,
+        )
+    )
+
     record = inbox.wait_for(
         expected_host,
-        process_alive=lambda: finder.get_rust_process_session().running,
+        process_alive=lambda: (
+            finder.get_rust_process_session().running
+        ),
     )
     if record is None:
-        print(_paint("[PAIRING STOPPED] Rust closed before a matching notification arrived.", YELLOW))
+        print(
+            _paint(
+                "[PAIRING STOPPED] Rust closed before a fresh "
+                "notification arrived.",
+                YELLOW,
+            )
+        )
         return ""
-    if not _apply_pairing_record(current, record, expected_host):
+
+    if not _apply_pairing_record(
+        current,
+        record,
+        expected_host,
+    ):
         return ""
-    print(_paint("[PAIRING RECEIVED] Port, Steam ID, and player token imported automatically.", GREEN, bold=True))
+    print(
+        _paint(
+            "[PAIRING RECEIVED] Fresh port, Steam ID, and player token "
+            "imported automatically.",
+            GREEN,
+            bold=True,
+        )
+    )
     return record.source
+
+
+
+
 
 
 def _prompt_required_int(label: str, validator: Callable[[int], bool]) -> int:
@@ -386,19 +598,32 @@ def _prompt_required_int(label: str, validator: Callable[[int], bool]) -> int:
         print(_paint("  Value is outside the accepted range.", RED))
 
 
-def _manual_complete_profile(current: RustCredentials) -> None:
+def _manual_complete_profile(
+    current: RustCredentials,
+) -> None:
     if not current.steam_id:
         current.steam_id = _prompt_required_int(
-            "Steam ID (17 digits)", lambda value: len(str(value)) == 17
+            "Steam ID (17 digits)",
+            lambda value: len(str(value)) == 17,
         )
     if not current.port:
         current.port = _prompt_required_int(
-            "Rust+ companion/app port", lambda value: 1 <= value <= 65535
+            "Rust+ companion/app port",
+            lambda value: 1 <= value <= 65535,
         )
     if not current.player_token:
-        current.player_token = _prompt_required_int(
-            "Rust+ player token", lambda value: value > 0
-        )
+        while True:
+            value = _prompt_required_int(
+                "Rust+ player token (signed int32; non-zero)",
+                lambda candidate: candidate != 0,
+            )
+            try:
+                current.player_token = normalize_player_token(value)
+            except ValueError as exc:
+                print(_paint(f"  {exc}", RED))
+                continue
+            break
+
 
 
 def _retry_port_discovery(store: JsonStore) -> DetectionReport | None:
@@ -463,25 +688,48 @@ def _collect_missing_fields(
 
 
 def _edit_profile(current: RustCredentials) -> None:
-    print(_paint("Enter a replacement value, or press Enter to keep the current value.", GRAY))
-    steam = input(f"> Steam ID [{current.steam_id}]: ").strip()
-    port = input(f"> Rust+ port [{current.port}]: ").strip()
-    token = input(f"> Player token [{current.player_token}] (visible): ").strip()
+    print(
+        _paint(
+            "Enter a replacement value, or press Enter to keep the "
+            "current value.",
+            GRAY,
+        )
+    )
+    steam = input(
+        f"> Steam ID [{current.steam_id}]: "
+    ).strip()
+    port = input(
+        f"> Rust+ port [{current.port}]: "
+    ).strip()
+    token = input(
+        f"> Player token [{current.player_token}] "
+        "(signed int32, visible): "
+    ).strip()
+
     if steam:
         value = int(steam)
         if len(str(value)) != 17:
-            raise ValueError("Steam ID must contain 17 digits")
+            raise ValueError(
+                "Steam ID must contain 17 digits"
+            )
         current.steam_id = value
+
     if port:
         value = int(port)
         if not 1 <= value <= 65535:
-            raise ValueError("Rust+ port must be between 1 and 65535")
+            raise ValueError(
+                "Rust+ port must be between 1 and 65535"
+            )
         current.port = value
+
     if token:
-        value = int(token)
-        if value <= 0:
-            raise ValueError("player token must be positive")
+        value = normalize_player_token(token)
+        if value == 0:
+            raise ValueError(
+                "player token must be a non-zero signed int32"
+            )
         current.player_token = value
+
 
 
 def _validate_profile(
@@ -494,42 +742,167 @@ def _validate_profile(
     client = RustPlusClient()
     while True:
         _status_line(
-            f"VALIDATING RUST+ WEBSOCKET  {current.host}:{current.port}  STEAM={current.steam_id}",
+            "VALIDATING RUST+ WEBSOCKET  "
+            f"{current.host}:{current.port}  "
+            f"STEAM={current.steam_id}",
             CYAN,
         )
         try:
             snapshot = client.fetch_snapshot(current)
         except Exception as exc:
-            print(_paint(f"[RUST+ VALIDATION FAILED] {exc}", RED, bold=True))
+            reason = str(exc).strip()
+            print(
+                _paint(
+                    f"[RUST+ VALIDATION FAILED] {reason}",
+                    RED,
+                    bold=True,
+                )
+            )
+            compact_reason = "".join(
+                character
+                for character in reason.casefold()
+                if character.isalnum()
+            )
+            if "notfound" in compact_reason:
+                print(
+                    _paint(
+                        "[STALE PROFILE] These credentials are not "
+                        "authorized for the detected game server.",
+                        YELLOW,
+                        bold=True,
+                    )
+                )
+                print(
+                    _paint(
+                        "The invalid Rust+ endpoint and player token "
+                        "have been removed. Steam ID is retained.",
+                        WHITE,
+                    )
+                )
+                assert report.selected is not None
+                current.host = report.selected.host
+                current.port = report.rust_app_port or 0
+                current.player_token = 0
+                _save_profile(
+                    store,
+                    key,
+                    current,
+                    report,
+                    pairing_source=(
+                        "validation_reset:not_found"
+                    ),
+                )
+                report, source = _collect_missing_fields(
+                    store,
+                    report,
+                    key,
+                    current,
+                )
+                pairing_source = source or pairing_source
+                continue
+
             print("  [R] Retry the same values")
             print("  [E] Edit this server profile")
             print("  [P] Receive/import a new pairing payload")
-            choice = input(_paint("> Select R / E / P: ", AMBER)).strip().casefold()
+            print("  [F] Forget the saved Rust+ pairing and start fresh")
+            choice = input(
+                _paint(
+                    "> Select R / E / P / F: ",
+                    AMBER,
+                )
+            ).strip().casefold()
+
             if choice == "r":
                 continue
             if choice == "e":
                 try:
                     _edit_profile(current)
                 except (TypeError, ValueError) as edit_error:
-                    print(_paint(f"[INVALID] {edit_error}", RED))
+                    print(
+                        _paint(
+                            f"[INVALID] {edit_error}",
+                            RED,
+                        )
+                    )
                     continue
-                _save_profile(store, key, current, report, pairing_source=pairing_source)
+                _save_profile(
+                    store,
+                    key,
+                    current,
+                    report,
+                    pairing_source=pairing_source,
+                )
                 continue
             if choice == "p":
+                assert report.selected is not None
                 finder = RustServerFinder(store)
-                source = _listen_for_pairing(current, current.host, finder)
+                source = _listen_for_pairing(
+                    current,
+                    report.selected.host,
+                    finder,
+                )
                 if not source:
-                    source = _import_pairing_text(current, current.host)
+                    source = _import_pairing_text(
+                        current,
+                        report.selected.host,
+                    )
                 pairing_source = source or pairing_source
-                _save_profile(store, key, current, report, pairing_source=pairing_source)
+                _save_profile(
+                    store,
+                    key,
+                    current,
+                    report,
+                    pairing_source=pairing_source,
+                )
                 continue
-            print(_paint("Choose R, E, or P.", RED))
+            if choice == "f":
+                assert report.selected is not None
+                current.host = report.selected.host
+                current.port = report.rust_app_port or 0
+                current.player_token = 0
+                _save_profile(
+                    store,
+                    key,
+                    current,
+                    report,
+                    pairing_source=(
+                        "validation_reset:user"
+                    ),
+                )
+                report, source = _collect_missing_fields(
+                    store,
+                    report,
+                    key,
+                    current,
+                )
+                pairing_source = source or pairing_source
+                continue
+
+            print(_paint("Choose R, E, P, or F.", RED))
             continue
 
-        print(_paint("[RUST+ VERIFIED] Live server and team authorization succeeded.", GREEN, bold=True))
-        _save_profile(store, key, current, report, pairing_source=pairing_source)
-        store.set("bootstrap_snapshot", snapshot.to_dict())
+        print(
+            _paint(
+                "[RUST+ VERIFIED] Live server and team authorization "
+                "succeeded.",
+                GREEN,
+                bold=True,
+            )
+        )
+        _save_profile(
+            store,
+            key,
+            current,
+            report,
+            pairing_source=pairing_source,
+        )
+        store.set(
+            "bootstrap_snapshot",
+            snapshot.to_dict(),
+        )
         return snapshot
+
+
 
 
 def prepare_credentials(store: JsonStore, report: DetectionReport) -> RustCredentials:
@@ -569,6 +942,11 @@ def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
 
 
 def main(argv: list[str] | None = None) -> int:
+    # RUST_COMPANION_DIAGNOSTICS_BEGIN
+    if os.environ.get("RUST_COMPANION_DEBUG", "").strip().casefold() in {"1", "true", "yes", "on"}:
+        from rust_companion_plus.debug_tools import install_debug_runtime
+        install_debug_runtime(sys.modules[__name__])
+    # RUST_COMPANION_DIAGNOSTICS_END
     args = _parse_args(argv)
     if args.data_dir:
         print(APP_DATA_DIR)
@@ -596,4 +974,3 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
-

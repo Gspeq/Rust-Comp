@@ -6,3 +6,8 @@ dist/
 build/
 *.spec
 !RustCompanionPlus.spec
+
+*.bak
+debug_bundles/
+release/
+.hotfix-backups/

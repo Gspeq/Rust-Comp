@@ -10,6 +10,7 @@ from rust_companion_plus.services.fcm_registration import (
     _RustPlusAuthBridge,
     _bridge_script,
     _extract_fcm_token,
+    refresh_fcm_registration,
     register_fcm_config,
 )
 
@@ -52,6 +53,28 @@ class FCMRegistrationTests(unittest.TestCase):
             self.assertEqual(config, json.loads(output.read_text(encoding="utf-8")))
             self.assertEqual("device-token", config["fcm_credentials"]["fcm"]["token"])
             self.assertGreaterEqual(len(events), 4)
+
+    def test_refresh_registration_preserves_phone_safe_config(self) -> None:
+        calls: list[tuple[str, str]] = []
+        with tempfile.TemporaryDirectory() as temporary:
+            output = Path(temporary) / "rustplus_fcm.json"
+            original = {
+                "fcm_credentials": {"fcm": {"token": "device-token"}},
+                "expo_push_token": "expo-token",
+                "rustplus_auth_token": "auth-token",
+            }
+            refreshed = refresh_fcm_registration(
+                original,
+                output_path=output,
+                push_registrar=lambda auth, expo: calls.append((auth, expo)),
+            )
+            self.assertEqual([("auth-token", "expo-token")], calls)
+            self.assertEqual("rustplus.py", refreshed["device_id"])
+            self.assertEqual(
+                refreshed,
+                json.loads(output.read_text(encoding="utf-8")),
+            )
+
 
 
 if __name__ == "__main__":

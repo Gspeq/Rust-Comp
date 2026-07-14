@@ -1,4 +1,6 @@
 from __future__ import annotations
+from rust_companion_plus.models import normalize_player_token
+import os
 from rust_companion_plus.config import APP_DATA_DIR
 
 import json
@@ -40,9 +42,9 @@ class PairingRecord:
     def is_complete(self) -> bool:
         return bool(
             self.host
-            and 1 <= self.port <= 65535
-            and self.steam_id > 0
-            and self.player_token > 0
+            and 1 <= int(self.port) <= 65535
+            and int(self.steam_id) > 0
+            and int(self.player_token) != 0
         )
 
     def matches_host(self, host: str) -> bool:
@@ -52,16 +54,16 @@ class PairingRecord:
         return asdict(self)
 
 
+
 def parse_pairing_payload(
     value: Any,
     *,
     source: str = "pairing_payload",
 ) -> PairingRecord | None:
-    # Merge Rust+ fields that may be split across notification wrappers.
     if value is None:
         return None
 
-    if isinstance(value, (bytes, bytearray)):
+    if isinstance(value, (bytes, bytearray, memoryview)):
         value = bytes(value).decode("utf-8", errors="replace")
 
     if isinstance(value, str):
@@ -103,7 +105,7 @@ def parse_pairing_payload(
             host=_first_text(normalized, _HOST_KEYS),
             port=_first_int(normalized, _PORT_KEYS),
             steam_id=_first_int(normalized, _STEAM_KEYS),
-            player_token=_first_int(normalized, _TOKEN_KEYS),
+            player_token=_first_player_token(normalized, _TOKEN_KEYS),
             server_name=_first_text(normalized, _NAME_KEYS),
             source=source,
             raw=dict(mapping),
@@ -113,7 +115,7 @@ def parse_pairing_payload(
                 4 if record.host else 0,
                 4 if record.port else 0,
                 3 if record.steam_id else 0,
-                5 if record.player_token else 0,
+                6 if record.player_token else 0,
                 1 if record.server_name else 0,
             )
         )
@@ -128,6 +130,7 @@ def parse_pairing_payload(
     for _score, candidate in candidates[1:]:
         merged = _merge_pairing_records(merged, candidate)
     return merged
+
 
 
 
@@ -212,6 +215,84 @@ def _pairing_missing_fields(record: PairingRecord) -> list[str]:
         missing.append("player token")
     return missing
 
+def _first_player_token(
+    mapping: dict[str, Any],
+    keys: set[str],
+) -> int:
+    for key in keys:
+        value = mapping.get(key)
+        try:
+            parsed = normalize_player_token(value)
+        except (TypeError, ValueError):
+            continue
+        if parsed != 0:
+            return parsed
+    return 0
+
+
+def _decode_push_value(value: Any) -> Any:
+    if isinstance(value, memoryview):
+        value = value.tobytes()
+    if isinstance(value, (bytes, bytearray)):
+        return bytes(value).decode("utf-8", errors="replace")
+    return value
+
+
+def _coerce_data_message_mapping(value: Any) -> dict[str, Any]:
+    result: dict[str, Any] = {}
+    if isinstance(value, dict):
+        result.update(value)
+
+    app_data = getattr(value, "app_data", None)
+    if app_data is not None:
+        try:
+            entries = list(app_data)
+        except TypeError:
+            entries = []
+        for item in entries:
+            if isinstance(item, dict):
+                key = item.get("key")
+                child = item.get("value")
+            elif isinstance(item, (tuple, list)) and len(item) >= 2:
+                key, child = item[0], item[1]
+            else:
+                key = getattr(item, "key", "")
+                child = getattr(item, "value", None)
+            if key is None or not str(key).strip():
+                continue
+            result[str(key)] = _decode_push_value(child)
+
+    if not isinstance(value, dict) and hasattr(value, "__dict__"):
+        try:
+            attributes = vars(value)
+        except TypeError:
+            attributes = {}
+        for key, child in attributes.items():
+            if str(key).startswith("_") or key == "app_data":
+                continue
+            child = _decode_push_value(child)
+            if isinstance(
+                child,
+                (str, int, float, bool, bytes, bytearray, dict, list, tuple),
+            ) or child is None:
+                result.setdefault(str(key), child)
+
+    return result
+
+
+def _debug_event(name: str, **fields: Any) -> None:
+    enabled = os.environ.get(
+        "RUST_COMPANION_DEBUG_CONSOLE",
+        "",
+    ).strip().casefold() in {"1", "true", "yes", "on"}
+    if not enabled:
+        return
+    try:
+        from rust_companion_plus import debug_tools
+        debug_tools.event(name, **fields)
+    except Exception:
+        return
+
 class PairingNotificationInbox:
     # Supervise and correlate multi-stage Rust+ pairing notifications.
 
@@ -244,20 +325,41 @@ class PairingNotificationInbox:
             notification: Any,
             data_message: Any,
         ) -> None:
+            inbox._ready.set()
+            normalized_data = _coerce_data_message_mapping(data_message)
+            _debug_event(
+                "pairing_data_message_normalized",
+                keys=sorted(normalized_data.keys()),
+                app_data_count=len(
+                    list(getattr(data_message, "app_data", []) or [])
+                ),
+                body_present=bool(normalized_data.get("body")),
+                channel_id=str(normalized_data.get("channelId") or ""),
+            )
             print(
                 "[RUST+ PUSH] Notification received; "
                 "decoding and correlating pairing data..."
             )
             try:
-                _append_payload_diagnostic(notification, data_message, obj)
+                _append_payload_diagnostic(
+                    notification,
+                    normalized_data,
+                    obj,
+                )
             except Exception as diagnostic_error:
                 print(
                     "[RUST+ DEBUG] Safe payload-structure capture failed: "
-                    f"{type(diagnostic_error).__name__}: {diagnostic_error}"
+                    f"{type(diagnostic_error).__name__}: "
+                    f"{diagnostic_error}"
                 )
 
             combined: PairingRecord | None = None
-            for candidate in (notification, data_message, obj):
+            for candidate in (
+                normalized_data,
+                notification,
+                data_message,
+                obj,
+            ):
                 record = parse_pairing_payload(
                     candidate,
                     source="rustplus_fcm_notification",
@@ -273,6 +375,23 @@ class PairingNotificationInbox:
 
             assert combined is not None
             inbox.records.put(combined)
+            summary = {
+                "host": combined.host,
+                "port": combined.port,
+                "steam_present": bool(combined.steam_id),
+                "player_token_present": combined.player_token != 0,
+                "player_token_sign": (
+                    "negative"
+                    if combined.player_token < 0
+                    else "positive"
+                    if combined.player_token > 0
+                    else "missing"
+                ),
+                "server_name": combined.server_name,
+                "complete": combined.is_complete(),
+            }
+            _debug_event("pairing_notification_correlated", record=summary)
+
             server = combined.server_name or combined.host or "unknown server"
             if combined.is_complete():
                 print(
@@ -321,25 +440,92 @@ class PairingNotificationInbox:
         )
         self._thread.start()
 
-
-    def wait_until_ready(self, timeout: float = 25.0) -> None:
+    def wait_until_ready(self, timeout: float = 12.0) -> bool:
         self.start()
-        deadline = __import__("time").monotonic() + timeout
-        while not self._ready.wait(0.25):
+        clock = __import__("time")
+        deadline = clock.monotonic() + timeout
+        while not self._ready.wait(0.20):
             if self._fatal_error is not None:
                 raise RuntimeError(
-                    f"Rust+ notification listener failed: {self._fatal_error}"
+                    f"Rust+ notification listener failed: "
+                    f"{self._fatal_error}"
                 ) from self._fatal_error
             if self._thread is not None and not self._thread.is_alive():
                 raise RuntimeError(
                     "Rust+ notification listener stopped before connecting."
                 )
-            if __import__("time").monotonic() >= deadline:
-                raise RuntimeError(
-                    "The Google push connection did not become ready. "
-                    "A firewall, VPN, router, or network may be blocking "
-                    "mtalk.google.com on TCP port 5228."
+            if clock.monotonic() >= deadline:
+                _debug_event(
+                    "pairing_receiver_ready_timeout",
+                    timeout=timeout,
+                    thread_alive=bool(
+                        self._thread and self._thread.is_alive()
+                    ),
                 )
+                return False
+        _debug_event("pairing_receiver_ready", confirmed=True)
+        return True
+
+    def drain_replayed(
+        self,
+        *,
+        quiet_period: float = 1.5,
+        max_wait: float = 10.0,
+        process_alive: Callable[[], bool] | None = None,
+    ) -> int:
+        self.start()
+        clock = __import__("time")
+        started = clock.monotonic()
+        quiet_deadline = started + max(0.1, quiet_period)
+        final_deadline = started + max(quiet_period, max_wait)
+        discarded = 0
+
+        while True:
+            if process_alive is not None and not process_alive():
+                return discarded
+
+            try:
+                error = self.errors.get_nowait()
+            except queue.Empty:
+                pass
+            else:
+                raise RuntimeError(
+                    f"Rust+ notification listener failed: {error}"
+                ) from error
+
+            now = clock.monotonic()
+            if now >= quiet_deadline or now >= final_deadline:
+                _debug_event(
+                    "pairing_stale_drain_completed",
+                    discarded=discarded,
+                    duration_ms=round((now - started) * 1000, 2),
+                    quiet_period=quiet_period,
+                    max_wait=max_wait,
+                )
+                return discarded
+
+            timeout = max(
+                0.01,
+                min(
+                    0.25,
+                    quiet_deadline - now,
+                    final_deadline - now,
+                ),
+            )
+            try:
+                record = self.records.get(timeout=timeout)
+            except queue.Empty:
+                continue
+
+            discarded += 1
+            quiet_deadline = min(
+                final_deadline,
+                clock.monotonic() + max(0.1, quiet_period),
+            )
+            print(
+                "[FRESHNESS GATE] Discarded queued pairing data for "
+                f"{record.server_name or record.host or 'an earlier request'}."
+            )
 
     def wait_for(
         self,
@@ -392,9 +578,8 @@ class PairingNotificationInbox:
                         f"after {elapsed}s; waiting for the final player token."
                     )
                     print(
-                        "[RUST+ PUSH] If the phone already shows paired, "
-                        "leave this receiver open and use Retry/Resend in Rust "
-                        "once when available."
+                        "[RUST+ PUSH] Keep the receiver open. If Rust offers "
+                        "Retry/Resend, use it once without unpairing the phone."
                     )
                     last_reminder_at = now
                 continue
@@ -411,9 +596,34 @@ class PairingNotificationInbox:
                 )
                 continue
 
+            if (
+                aggregate is not None
+                and aggregate.host
+                and record.host
+                and not aggregate.matches_host(record.host)
+                and not record.player_token
+            ):
+                print(
+                    "[RUST+ PUSH] A newer server pairing request replaced "
+                    "the previous incomplete handshake."
+                )
+                aggregate = None
+                first_partial_at = None
+
             aggregate = _merge_pairing_records(aggregate, record)
 
             if aggregate.is_complete():
+                _debug_event(
+                    "pairing_handshake_complete",
+                    host=aggregate.host,
+                    port=aggregate.port,
+                    player_token_sign=(
+                        "negative"
+                        if aggregate.player_token < 0
+                        else "positive"
+                    ),
+                    server_name=aggregate.server_name,
+                )
                 if host and aggregate.host and not aggregate.matches_host(host):
                     print(
                         "[RUST+ PUSH] Companion endpoint "
@@ -428,14 +638,22 @@ class PairingNotificationInbox:
 
             missing = ", ".join(_pairing_missing_fields(aggregate))
             endpoint = f"{aggregate.host or '?'}:{aggregate.port or '?'}"
+            _debug_event(
+                "pairing_handshake_partial",
+                host=aggregate.host,
+                port=aggregate.port,
+                missing=missing,
+                server_name=aggregate.server_name,
+            )
             print(
                 "[RUST+ PUSH] Pairing handshake started for "
                 f"{aggregate.server_name or endpoint}; still missing {missing}."
             )
             print(
                 "[RUST+ PUSH] Keep the receiver open while completing the "
-                "phone confirmation. A later push will be merged automatically."
+                "phone confirmation. Later pushes are merged automatically."
             )
+
 
 
 
@@ -645,15 +863,17 @@ def _walk_mappings(
     _depth: int = 0,
     _seen: set[int] | None = None,
 ):
-    # Rust+ wrappers frequently store another JSON object inside body/message
-    # strings. Decode those strings recursively instead of treating them as
-    # opaque scalar values.
-    if _depth > 12:
+    if _depth > 14:
         return
     if _seen is None:
         _seen = set()
 
-    if isinstance(value, (dict, list, tuple)) or hasattr(value, "__dict__"):
+    track_identity = (
+        isinstance(value, (dict, list, tuple))
+        or hasattr(value, "__dict__")
+        or hasattr(value, "app_data")
+    )
+    if track_identity:
         identity = id(value)
         if identity in _seen:
             return
@@ -678,6 +898,8 @@ def _walk_mappings(
             )
         return
 
+    if isinstance(value, memoryview):
+        value = value.tobytes()
     if isinstance(value, (bytes, bytearray)):
         value = bytes(value).decode("utf-8", errors="replace")
 
@@ -709,16 +931,26 @@ def _walk_mappings(
             )
         return
 
+    if hasattr(value, "app_data"):
+        normalized = _coerce_data_message_mapping(value)
+        if normalized:
+            yield from _walk_mappings(
+                normalized,
+                _depth=_depth + 1,
+                _seen=_seen,
+            )
+
     if hasattr(value, "__dict__"):
         try:
-            payload = vars(value)
+            attributes = vars(value)
         except TypeError:
             return
         yield from _walk_mappings(
-            payload,
+            attributes,
             _depth=_depth + 1,
             _seen=_seen,
         )
+
 
 
 

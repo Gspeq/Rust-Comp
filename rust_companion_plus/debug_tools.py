@@ -18,7 +18,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from rust_companion_plus.config import APP_DATA_DIR, STORE_PATH
+from rust_companion_plus.config import APP_DATA_DIR, STORE_PATH, FCM_CONFIG_PATH
 
 
 _DEBUG_DIR = APP_DATA_DIR / "debug"
@@ -706,104 +706,135 @@ def create_review_report(
     filename = f"rust-companion-review-{timestamp}.txt"
 
     if output_path is None:
-        output_path = Path.cwd() / "debug_bundles" / filename
+        output_path = (
+            Path.cwd()
+            / "debug_bundles"
+            / filename
+        )
     else:
         output_path = output_path.expanduser()
         if output_path.suffix.casefold() != ".txt":
             output_path = output_path / filename
 
     output_path = output_path.resolve()
-    output_path.parent.mkdir(parents=True, exist_ok=True)
+    output_path.parent.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
     sections: list[str] = []
 
-    def section(title: str, body: str) -> None:
-        sections.append(
-            "\n".join(
-                (
-                    "=" * 88,
-                    title,
-                    "=" * 88,
-                    body.rstrip(),
-                    "",
-                )
+    def section(title: str, value: Any) -> None:
+        if not isinstance(value, str):
+            value = json.dumps(
+                _redact(value),
+                indent=2,
+                ensure_ascii=False,
+                sort_keys=True,
+            )
+        sections.extend(
+            (
+                "=" * 88,
+                title,
+                "=" * 88,
+                value.rstrip(),
+                "",
             )
         )
 
     raw_status = _git_text("status", "--short")
-    ignored_status_fragments = (
-        ".bak",
-        "debug_bundles/",
-        "debug_bundles\\",
-        "release/",
-        "release\\",
-        "__pycache__",
-    )
     status_lines = [
         line
         for line in raw_status.splitlines()
         if not any(
             fragment in line
-            for fragment in ignored_status_fragments
+            for fragment in (
+                ".bak",
+                "debug_bundles/",
+                "debug_bundles\\",
+                "release/",
+                "release\\",
+                "__pycache__",
+            )
         )
     ]
-
-    environment = {
-        "created_at": _utc_now(),
-        "python": sys.version,
-        "executable": sys.executable,
-        "cwd": str(Path.cwd()),
-        "platform": platform.platform(),
-        "git_branch": _git_text("branch", "--show-current"),
-        "git_head": _git_text("rev-parse", "--short", "HEAD"),
-        "relevant_git_status": "\n".join(status_lines),
-        "git_diff_check": _git_text("diff", "--check"),
-    }
     section(
-        "RUST COMPANION+ REVIEW REPORT",
-        json.dumps(_redact(environment), indent=2, ensure_ascii=False),
+        "BUILD / BRANCH STATE",
+        {
+            "created_at": _utc_now(),
+            "python": sys.version,
+            "platform": platform.platform(),
+            "git_branch": _git_text(
+                "branch",
+                "--show-current",
+            ),
+            "git_head": _git_text(
+                "rev-parse",
+                "--short",
+                "HEAD",
+            ),
+            "origin_test_live_sync": _git_text(
+                "rev-parse",
+                "--short",
+                "origin/test-live-sync",
+            ),
+            "ahead_behind": _git_text(
+                "rev-list",
+                "--left-right",
+                "--count",
+                "HEAD...origin/test-live-sync",
+            ),
+            "relevant_git_status": "\n".join(
+                status_lines
+            ),
+            "git_diff_check": _git_text(
+                "diff",
+                "--check",
+            ),
+        },
     )
 
     latest = _latest_log()
-    if latest is None:
-        section("LATEST STRUCTURED DIAGNOSTICS", "<no diagnostics log found>")
-    else:
-        rows: list[str] = []
-        interesting_events = (
-            "server_detection",
-            "pairing",
-            "validation",
-            "profile",
-            "debug_session",
-            "exception",
-        )
+    timeline: list[str] = []
+    if latest is not None:
         try:
             for line in latest.read_text(
                 encoding="utf-8",
                 errors="replace",
-            ).splitlines()[-500:]:
+            ).splitlines()[-800:]:
                 try:
-                    decoded = json.loads(line)
+                    row = json.loads(line)
                 except json.JSONDecodeError:
                     continue
-                event_name = str(decoded.get("event", "")).casefold()
-                if not any(
+                event_name = str(
+                    row.get("event", "")
+                ).casefold()
+                if any(
                     marker in event_name
-                    for marker in interesting_events
-                ):
-                    continue
-                rows.append(
-                    json.dumps(
-                        _redact(decoded),
-                        ensure_ascii=False,
-                        sort_keys=True,
+                    for marker in (
+                        "server_detection",
+                        "pairing",
+                        "validation",
+                        "profile",
+                        "exception",
+                        "debug_session",
                     )
-                )
+                ):
+                    timeline.append(
+                        json.dumps(
+                            _redact(row),
+                            ensure_ascii=False,
+                            sort_keys=True,
+                        )
+                    )
         except Exception as exc:
-            rows = [f"<diagnostics read failed: {exc}>"]
-        section(
-            "PAIRING/DETECTION EVENT TIMELINE",
-            "\n".join(rows[-240:]) or "<no relevant events>",
-        )
+            timeline = [
+                f"<diagnostics read failed: {exc}>"
+            ]
+    section(
+        "PAIRING STATE-MACHINE TIMELINE",
+        "\n".join(timeline[-320:])
+        or "<no relevant debug events>",
+    )
 
     payload_path = (
         APP_DATA_DIR
@@ -812,37 +843,110 @@ def create_review_report(
     )
     if payload_path.is_file():
         try:
-            payload_text = "\n".join(
-                payload_path.read_text(
-                    encoding="utf-8",
-                    errors="replace",
-                ).splitlines()[-8:]
-            )
+            payload_rows = payload_path.read_text(
+                encoding="utf-8",
+                errors="replace",
+            ).splitlines()[-12:]
+            payload_text = "\n".join(payload_rows)
         except Exception as exc:
-            payload_text = f"<payload structure read failed: {exc}>"
+            payload_text = (
+                f"<payload structure read failed: {exc}>"
+            )
     else:
         payload_text = (
-            "<no safe payload-structure trace yet; "
-            "reproduce one pairing attempt>"
+            "<no safe payload trace yet; reproduce one "
+            "pairing attempt>"
         )
-    section("SAFE PAIRING PAYLOAD STRUCTURE", payload_text)
+    section(
+        "SAFE PAIRING PAYLOAD STRUCTURE / FCM APP_DATA",
+        payload_text,
+    )
+
+    test_status_path = (
+        APP_DATA_DIR
+        / "debug"
+        / "last-test-run.json"
+    )
+    if test_status_path.is_file():
+        try:
+            test_status = json.loads(
+                test_status_path.read_text(
+                    encoding="utf-8-sig"
+                )
+            )
+        except Exception as exc:
+            test_status = {
+                "read_error": str(exc)
+            }
+    else:
+        test_status = {
+            "status": "No completed hotfix test run recorded."
+        }
+    section("LAST HOTFIX TEST RESULT", test_status)
+
+    fcm_summary: dict[str, Any] = {
+        "config_path": str(FCM_CONFIG_PATH),
+        "config_exists": FCM_CONFIG_PATH.is_file(),
+    }
+    if FCM_CONFIG_PATH.is_file():
+        try:
+            config = json.loads(
+                FCM_CONFIG_PATH.read_text(
+                    encoding="utf-8-sig"
+                )
+            )
+            fcm_credentials = config.get(
+                "fcm_credentials"
+            )
+            fcm_summary.update(
+                {
+                    "registered_by": config.get(
+                        "registered_by",
+                        "",
+                    ),
+                    "has_fcm_credentials": isinstance(
+                        fcm_credentials,
+                        dict,
+                    ),
+                    "has_expo_push_token": bool(
+                        config.get("expo_push_token")
+                    ),
+                    "has_rustplus_auth_token": bool(
+                        config.get("rustplus_auth_token")
+                    ),
+                    "last_facepunch_refresh": config.get(
+                        "last_facepunch_refresh",
+                        "",
+                    ),
+                    "config_keys": sorted(config.keys()),
+                    "modified_at": datetime.fromtimestamp(
+                        FCM_CONFIG_PATH.stat().st_mtime,
+                        timezone.utc,
+                    ).isoformat(),
+                }
+            )
+        except Exception as exc:
+            fcm_summary["read_error"] = str(exc)
+    section("FCM RECEIVER REGISTRATION", fcm_summary)
 
     if STORE_PATH.is_file():
         try:
             store = json.loads(
-                STORE_PATH.read_text(encoding="utf-8-sig")
+                STORE_PATH.read_text(
+                    encoding="utf-8-sig"
+                )
             )
         except Exception as exc:
             store = {"store_read_error": str(exc)}
     else:
         store = {}
 
-    detection = dict(
+    detection = (
         store.get("server_detection", {})
         if isinstance(store, dict)
         else {}
     )
-    detection_debug = [
+    decision_trace = [
         line
         for line in detection.get("debug", [])
         if any(
@@ -852,60 +956,67 @@ def create_review_report(
                 "rust+",
                 "a2s",
                 "battlemetrics",
-                "websocket probe",
+                "websocket",
                 "official-default",
                 "process socket",
             )
         )
     ]
-    network_summary = {
-        "selected": detection.get("selected"),
-        "rust_app_port": detection.get("rust_app_port"),
-        "rust_app_port_source": detection.get("rust_app_port_source"),
-        "warnings": detection.get("warnings", []),
-        "decision_trace": detection_debug[-100:],
-        "packet_capture_enabled": False,
-        "packet_capture_reason": (
-            "Rust log and targeted endpoint probes are safer and "
-            "more authoritative; the Rust game client does not "
-            "connect to the Rust+ companion WebSocket."
-        ),
-    }
     section(
         "NETWORK DISCOVERY DECISION",
-        json.dumps(_redact(network_summary), indent=2, ensure_ascii=False),
+        {
+            "selected": detection.get("selected"),
+            "rust_app_port": detection.get(
+                "rust_app_port"
+            ),
+            "rust_app_port_source": detection.get(
+                "rust_app_port_source"
+            ),
+            "warnings": detection.get("warnings", []),
+            "decision_trace": decision_trace[-120:],
+            "packet_capture_enabled": False,
+            "strategy": (
+                "Rust log game endpoint, exact BattleMetrics, "
+                "A2S rules, one verified game-port+67 "
+                "WebSocket probe, then authoritative pairing "
+                "payload."
+            ),
+        },
     )
 
-    profile_summary = {
-        "player_identity": (
-            store.get("player_identity", {})
-            if isinstance(store, dict)
-            else {}
-        ),
-        "credential_profiles": (
-            store.get("credential_profiles", {})
-            if isinstance(store, dict)
-            else {}
-        ),
-        "credential_profile_metadata": (
-            store.get("credential_profile_metadata", {})
-            if isinstance(store, dict)
-            else {}
-        ),
-    }
+    profiles = (
+        store.get("credential_profiles", {})
+        if isinstance(store, dict)
+        else {}
+    )
+    profile_metadata = (
+        store.get(
+            "credential_profile_metadata",
+            {},
+        )
+        if isinstance(store, dict)
+        else {}
+    )
     section(
-        "REDACTED PROFILE SUMMARY",
-        json.dumps(_redact(profile_summary), indent=2, ensure_ascii=False),
+        "REDACTED SERVER PROFILE VAULT",
+        {
+            "player_identity": (
+                store.get("player_identity", {})
+                if isinstance(store, dict)
+                else {}
+            ),
+            "credential_profiles": profiles,
+            "credential_profile_metadata": (
+                profile_metadata
+            ),
+            "signed_player_token_supported": True,
+        },
     )
 
     rust_log = _rust_log_path()
     rust_rows: list[str] = []
     if rust_log.is_file():
         try:
-            all_lines = rust_log.read_text(
-                encoding="utf-8",
-                errors="replace",
-            ).splitlines()
             markers = (
                 "Connecting:",
                 "Rust+",
@@ -919,112 +1030,68 @@ def create_review_report(
             )
             rust_rows = [
                 line
-                for line in all_lines[-1600:]
+                for line in rust_log.read_text(
+                    encoding="utf-8",
+                    errors="replace",
+                ).splitlines()[-2200:]
                 if any(
-                    marker.casefold() in line.casefold()
+                    marker.casefold()
+                    in line.casefold()
                     for marker in markers
                 )
             ]
         except Exception as exc:
-            rust_rows = [f"<Rust log read failed: {exc}>"]
+            rust_rows = [
+                f"<Rust log read failed: {exc}>"
+            ]
     else:
-        rust_rows = [f"<Rust log not found at {rust_log}>"]
+        rust_rows = [
+            f"<Rust log not found at {rust_log}>"
+        ]
     section(
         "PAIRING-RELEVANT RUST LOG LINES",
-        "\n".join(rust_rows[-180:]),
+        "\n".join(rust_rows[-220:]),
     )
 
-    def source_item(
-        path: Path,
-        kind: type[ast.AST],
-        name: str,
-    ) -> str:
-        try:
-            source = path.read_text(
-                encoding="utf-8-sig"
-            ).replace("\r\n", "\n")
-            tree = ast.parse(source)
-            node = next(
-                (
-                    item
-                    for item in tree.body
-                    if isinstance(item, kind)
-                    and getattr(item, "name", "") == name
-                ),
-                None,
-            )
-            if node is None or node.end_lineno is None:
-                return f"<{name} not found in {path}>"
-            lines = source.splitlines()
-            return "\n".join(
-                lines[node.lineno - 1 : node.end_lineno]
-            )
-        except Exception as exc:
-            return f"<source read failed for {path}: {exc}>"
-
-    repo = Path.cwd()
-    pairing_file = (
-        repo
-        / "rust_companion_plus"
-        / "services"
-        / "pairing.py"
-    )
-    finder_file = (
-        repo
-        / "rust_companion_plus"
-        / "services"
-        / "server_finder.py"
-    )
-    bootstrap_file = repo / "rust_companion_plus" / "bootstrap.py"
-    source_sections = [
-        source_item(
-            pairing_file,
-            ast.FunctionDef,
-            "parse_pairing_payload",
-        ),
-        source_item(
-            pairing_file,
-            ast.FunctionDef,
-            "_walk_mappings",
-        ),
-        source_item(
-            pairing_file,
-            ast.ClassDef,
-            "PairingNotificationInbox",
-        ),
-        source_item(
-            finder_file,
-            ast.FunctionDef,
-            "_probe_rustplus_websocket",
-        ),
-        source_item(
-            finder_file,
-            ast.ClassDef,
-            "RustServerFinder",
-        ),
-        source_item(
-            bootstrap_file,
-            ast.FunctionDef,
-            "_listen_for_pairing",
-        ),
-        source_item(
-            bootstrap_file,
-            ast.FunctionDef,
-            "_validate_profile",
-        ),
-    ]
-    section("RELEVANT SOURCE SNAPSHOT", "\n\n".join(source_sections))
+    source_manifest: dict[str, Any] = {}
+    for relative in (
+        "rust_companion_plus/models.py",
+        "rust_companion_plus/bootstrap.py",
+        "rust_companion_plus/services/pairing.py",
+        "rust_companion_plus/services/fcm_registration.py",
+        "rust_companion_plus/services/server_finder.py",
+        "rust_companion_plus/services/rustplus_client.py",
+        "rust_companion_plus/debug_tools.py",
+    ):
+        path = Path.cwd() / relative
+        if path.is_file():
+            source_manifest[relative] = {
+                "sha256": _file_digest(path),
+                "size": path.stat().st_size,
+                "modified": datetime.fromtimestamp(
+                    path.stat().st_mtime,
+                    timezone.utc,
+                ).isoformat(),
+            }
+    section("SOURCE MANIFEST", source_manifest)
 
     output_path.write_text(
         "\n".join(sections),
         encoding="utf-8",
         newline="\n",
     )
-    pointer = output_path.parent / "latest-review-report.txt"
-    pointer.write_text(str(output_path), encoding="utf-8")
+    pointer = (
+        output_path.parent
+        / "latest-review-report.txt"
+    )
+    pointer.write_text(
+        str(output_path),
+        encoding="utf-8",
+    )
     print(f"Review report created: {output_path}")
     print(f"REVIEW_REPORT_PATH={output_path}")
     return output_path
+
 
 
 

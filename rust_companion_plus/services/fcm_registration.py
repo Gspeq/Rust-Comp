@@ -1,4 +1,5 @@
 from __future__ import annotations
+from datetime import datetime, timezone
 
 import contextlib
 import io
@@ -28,6 +29,7 @@ _RUST_PUSH_REGISTER_URL = "https://companion-rust.facepunch.com:443/api/push/reg
 _RUST_LOGIN_URL = "https://companion-rust.facepunch.com/login"
 
 StatusCallback = Callable[[str], None]
+_DEFAULT_DEVICE_ID = "rustplus.py"
 
 
 class FCMRegistrationError(RuntimeError):
@@ -82,6 +84,7 @@ def register_fcm_config(
         "fcm_credentials": fcm_credentials,
         "expo_push_token": expo_push_token,
         "rustplus_auth_token": rustplus_auth_token,
+        "device_id": _DEFAULT_DEVICE_ID,
         "registered_by": "Rust Companion+",
     }
     save_fcm_config(output_path, config)
@@ -170,12 +173,81 @@ def _register_with_rust_plus(auth_token: str, expo_push_token: str) -> None:
     payload = json.dumps(
         {
             "AuthToken": auth_token,
-            "DeviceId": "Rust Companion+",
+            "DeviceId": "rustplus.py",
             "PushKind": 3,
             "PushToken": expo_push_token,
         }
     ).encode("utf-8")
     _request_json(_RUST_PUSH_REGISTER_URL, payload, allow_empty=True)
+
+
+
+def refresh_fcm_registration(
+    config: dict[str, Any],
+    *,
+    output_path: Path = FCM_CONFIG_PATH,
+    status: StatusCallback | None = None,
+    push_registrar: Callable[[str, str], None] | None = None,
+) -> dict[str, Any] | None:
+    # Re-register the existing desktop push identity with Facepunch.
+    # No FCM, Expo, Steam authorization, or phone identity is regenerated.
+    announce = status or (lambda _message: None)
+    registrar = push_registrar or _register_with_rust_plus
+
+    auth_token = str(
+        config.get("rustplus_auth_token") or ""
+    ).strip()
+    expo_push_token = str(
+        config.get("expo_push_token") or ""
+    ).strip()
+
+    if not auth_token or not expo_push_token:
+        announce(
+            "Saved receiver registration is incomplete; "
+            "full setup is required."
+        )
+        return None
+
+    # Older rustplus.py-compatible configs require this stable label even
+    # though Facepunch registration itself only uses the Expo push token.
+    config["device_id"] = str(
+        config.get("device_id") or _DEFAULT_DEVICE_ID
+    )
+    config["registered_by"] = str(
+        config.get("registered_by") or "Rust Companion+"
+    )
+
+    announce("Refreshing this desktop receiver with Facepunch...")
+    _call(
+        "Facepunch push registration refresh",
+        registrar,
+        auth_token,
+        expo_push_token,
+    )
+
+    config["last_facepunch_refresh"] = datetime.now(
+        timezone.utc
+    ).isoformat(timespec="seconds")
+    config["last_facepunch_refresh_status"] = "confirmed"
+    config["receiver_registration_mode"] = "existing_identity_refresh"
+
+    save_fcm_config(output_path, config)
+    try:
+        resolved_output = Path(output_path)
+        if resolved_output.exists():
+            resolved_output.chmod(0o600)
+    except OSError:
+        pass
+
+    announce(
+        "Desktop receiver registration confirmed. "
+        "The official phone pairing was not changed."
+    )
+    return config
+
+
+
+
 
 
 def _request_json(url: str, payload: bytes, *, allow_empty: bool = False) -> dict[str, Any]:
@@ -253,9 +325,11 @@ def _capture_rustplus_auth_token(timeout: float) -> str:
         confirm_close=False,
     )
 
-    def install_bridge(target: Any) -> None:
+    def install_bridge(*_event_args: Any) -> None:
         try:
-            target.evaluate_js(_bridge_script())
+            # pywebview versions differ: some loaded events pass the window,
+            # while others pass no arguments. Use the closed-over window.
+            window.evaluate_js(_bridge_script())
         except Exception:
             # A redirect can invalidate the old page while the loaded event is firing.
             # The next Facepunch page load will install the bridge again.
