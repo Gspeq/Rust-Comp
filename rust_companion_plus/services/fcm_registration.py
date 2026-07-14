@@ -1,15 +1,16 @@
 from __future__ import annotations
 
+import contextlib
+import io
 import json
 import os
 import threading
+import time
 import urllib.error
-import urllib.parse
 import urllib.request
 from collections.abc import Callable
 from pathlib import Path
 from typing import Any
-from urllib.parse import urlparse
 from uuid import uuid4
 
 from rust_companion_plus.config import APP_DATA_DIR, FCM_CONFIG_PATH
@@ -108,14 +109,30 @@ def _register_android_fcm() -> dict[str, Any]:
         raise FCMRegistrationError(
             "rustPlusPushReceiver is unavailable. Reinstall the application dependencies."
         ) from exc
-    credentials = AndroidFCM.register(
-        _API_KEY,
-        _PROJECT_ID,
-        _GCM_SENDER_ID,
-        _GMS_APP_ID,
-        _ANDROID_PACKAGE_NAME,
-        _ANDROID_PACKAGE_CERT,
-    )
+
+    # The upstream library prints PHONE_REGISTRATION_ERROR for transient attempts,
+    # even when a later built-in retry succeeds. Keep the console clear unless the
+    # complete registration operation actually fails.
+    output = io.StringIO()
+    try:
+        with contextlib.redirect_stdout(output):
+            credentials = AndroidFCM.register(
+                _API_KEY,
+                _PROJECT_ID,
+                _GCM_SENDER_ID,
+                _GMS_APP_ID,
+                _ANDROID_PACKAGE_NAME,
+                _ANDROID_PACKAGE_CERT,
+            )
+    except Exception as exc:
+        diagnostic = output.getvalue().strip()
+        if "PHONE_REGISTRATION_ERROR" in diagnostic:
+            raise FCMRegistrationError(
+                "Google rejected the virtual notification receiver after all retries. "
+                "Wait a few minutes and select A again."
+            ) from exc
+        raise
+
     if not isinstance(credentials, dict):
         raise FCMRegistrationError("FCM returned an unexpected registration response.")
     _extract_fcm_token(credentials)
@@ -193,10 +210,15 @@ def _request_json(url: str, payload: bytes, *, allow_empty: bool = False) -> dic
 
 
 class _RustPlusAuthBridge:
+    """Minimal JS callback target.
+
+    This method deliberately performs no WebView operations. Calling window APIs or
+    destroying the window from inside a pywebview JS callback can deadlock WebView2.
+    """
+
     def __init__(self) -> None:
-        self.window: Any = None
         self.token = ""
-        self.finished = threading.Event()
+        self.token_ready = threading.Event()
 
     def capture(self, message: str) -> bool:
         try:
@@ -204,14 +226,10 @@ class _RustPlusAuthBridge:
         except (TypeError, json.JSONDecodeError):
             return False
         token = payload.get("Token") if isinstance(payload, dict) else None
-        current_url = self.window.get_current_url() if self.window is not None else ""
-        host = (urlparse(current_url).hostname or "").casefold()
-        if not token or not (host == "facepunch.com" or host.endswith(".facepunch.com")):
+        if not token or not str(token).strip():
             return False
         self.token = str(token).strip()
-        self.finished.set()
-        if self.window is not None:
-            self.window.destroy()
+        self.token_ready.set()
         return True
 
 
@@ -222,6 +240,9 @@ def _capture_rustplus_auth_token(timeout: float) -> str:
         raise FCMRegistrationError("pywebview is unavailable. Reinstall the application dependencies.") from exc
 
     bridge = _RustPlusAuthBridge()
+    window_closed = threading.Event()
+    timed_out = threading.Event()
+
     window = webview.create_window(
         "Rust Companion+ - Link Steam with Rust+",
         _RUST_LOGIN_URL,
@@ -229,20 +250,45 @@ def _capture_rustplus_auth_token(timeout: float) -> str:
         width=1100,
         height=780,
         min_size=(800, 600),
-        confirm_close=True,
+        confirm_close=False,
     )
-    bridge.window = window
 
     def install_bridge(target: Any) -> None:
-        target.evaluate_js(_bridge_script())
+        try:
+            target.evaluate_js(_bridge_script())
+        except Exception:
+            # A redirect can invalidate the old page while the loaded event is firing.
+            # The next Facepunch page load will install the bridge again.
+            return
 
-    def enforce_timeout() -> None:
-        if not bridge.finished.wait(timeout) and bridge.window is not None:
-            bridge.window.destroy()
+    def note_closed() -> None:
+        window_closed.set()
+
+    def close_after_result() -> None:
+        deadline = time.monotonic() + timeout
+        while not window_closed.is_set():
+            if bridge.token_ready.wait(0.1):
+                # Let the JS API call return before touching the native window.
+                time.sleep(0.35)
+                if not window_closed.is_set():
+                    try:
+                        window.destroy()
+                    except Exception:
+                        pass
+                return
+            if time.monotonic() >= deadline:
+                timed_out.set()
+                try:
+                    window.destroy()
+                except Exception:
+                    pass
+                return
 
     window.events.loaded += install_bridge
-    timer = threading.Thread(target=enforce_timeout, name="rustplus-auth-timeout", daemon=True)
-    timer.start()
+    window.events.closed += note_closed
+    closer = threading.Thread(target=close_after_result, name="rustplus-auth-window-closer", daemon=True)
+    closer.start()
+
     try:
         webview.start(
             gui="edgechromium",
@@ -251,24 +297,44 @@ def _capture_rustplus_auth_token(timeout: float) -> str:
         )
     except Exception as exc:
         raise FCMRegistrationError(
-            "The secure WebView2 login window could not start. Install or repair Microsoft Edge WebView2 Runtime."
+            "The WebView2 login window could not start. Install or repair Microsoft Edge WebView2 Runtime."
         ) from exc
-    if not bridge.token:
-        raise FCMRegistrationError("Rust+ authorization was cancelled or timed out.")
-    return bridge.token
+
+    if bridge.token:
+        return bridge.token
+    if timed_out.is_set():
+        raise FCMRegistrationError("Rust+ authorization timed out after five minutes.")
+    raise FCMRegistrationError("Rust+ authorization window was closed before sign-in completed.")
 
 
 def _bridge_script() -> str:
-    return """
+    # The host restriction is enforced in the page itself, so the Python callback
+    # never needs to synchronously query the WebView URL.
+    return r"""
 (function installRustPlusBridge() {
-  if (window.pywebview && window.pywebview.api && window.pywebview.api.capture) {
-    window.ReactNativeWebView = {
-      postMessage: function(message) {
-        return window.pywebview.api.capture(message);
-      }
-    };
+  const host = String(window.location.hostname || '').toLowerCase();
+  const isFacepunch = host === 'facepunch.com' || host.endsWith('.facepunch.com');
+  if (!isFacepunch) {
     return;
   }
-  window.setTimeout(installRustPlusBridge, 50);
+  if (!(window.pywebview && window.pywebview.api && window.pywebview.api.capture)) {
+    window.setTimeout(installRustPlusBridge, 25);
+    return;
+  }
+  const bridge = {
+    postMessage: function(message) {
+      window.pywebview.api.capture(String(message)).catch(function() {});
+    }
+  };
+  try {
+    Object.defineProperty(window, 'ReactNativeWebView', {
+      configurable: true,
+      enumerable: true,
+      writable: true,
+      value: bridge
+    });
+  } catch (_) {
+    window.ReactNativeWebView = bridge;
+  }
 })();
 """

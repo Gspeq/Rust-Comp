@@ -7,6 +7,7 @@ from pathlib import Path
 
 from rust_companion_plus.services.fcm_registration import (
     FCMRegistrationError,
+    _RustPlusAuthBridge,
     _bridge_script,
     _extract_fcm_token,
     register_fcm_config,
@@ -19,11 +20,20 @@ class FCMRegistrationTests(unittest.TestCase):
         with self.assertRaises(FCMRegistrationError):
             _extract_fcm_token({})
 
-    def test_bridge_script_exposes_expected_rustplus_interface(self) -> None:
+    def test_bridge_script_is_host_restricted(self) -> None:
         script = _bridge_script()
         self.assertIn("ReactNativeWebView", script)
         self.assertIn("window.pywebview.api.capture", script)
+        self.assertIn("facepunch.com", script)
         self.assertNotIn("disable-web-security", script)
+
+    def test_capture_only_records_token(self) -> None:
+        bridge = _RustPlusAuthBridge()
+        self.assertFalse(bridge.capture("not-json"))
+        self.assertTrue(bridge.capture(json.dumps({"Token": "steam-token"})))
+        self.assertEqual("steam-token", bridge.token)
+        self.assertTrue(bridge.token_ready.is_set())
+        self.assertFalse(hasattr(bridge, "window"))
 
     def test_registration_orchestration_saves_complete_config(self) -> None:
         events: list[str] = []
