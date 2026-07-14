@@ -704,6 +704,10 @@ def create_debug_bundle(output_path: Path | None = None) -> Path:
             "rust_companion_plus/services/pairing.py",
             "rust_companion_plus/services/fcm_registration.py",
             "rust_companion_plus/services/rustplus_client.py",
+        "rust_companion_plus/services/item_catalog.py",
+        "rust_companion_plus/ui/tabs/shops.py",
+            "rust_companion_plus/services/item_catalog.py",
+            "rust_companion_plus/ui/tabs/shops.py",
             "rust_companion_plus/debug_tools.py",
         ):
             path = repo / relative

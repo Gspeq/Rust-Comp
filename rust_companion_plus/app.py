@@ -169,7 +169,7 @@ class AppContext:
 
 class RustCompanionApp(ctk.CTk):
     DETECTION_INTERVAL_MS = 10_000
-    RUSTPLUS_INTERVAL_MS = 30_000
+    RUSTPLUS_INTERVAL_MS = 3_000
     BATTLEMETRICS_INTERVAL_SECONDS = 120
 
     def __init__(self) -> None:
