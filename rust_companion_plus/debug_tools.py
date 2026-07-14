@@ -1035,6 +1035,18 @@ def create_review_report(
                         "last_facepunch_refresh_status",
                         "",
                     ),
+                    "facepunch_registered": config.get(
+                        "facepunch_registered",
+                        "legacy/unknown",
+                    ),
+                    "last_facepunch_unregister": config.get(
+                        "last_facepunch_unregister",
+                        "",
+                    ),
+                    "last_facepunch_unregister_status": config.get(
+                        "last_facepunch_unregister_status",
+                        "",
+                    ),
                     "has_fcm_credentials": isinstance(
                         fcm_credentials,
                         dict,

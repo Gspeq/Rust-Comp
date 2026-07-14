@@ -26,6 +26,7 @@ _ANDROID_PACKAGE_NAME = "com.facepunch.rust.companion"
 _ANDROID_PACKAGE_CERT = "E28D05345FB78A7A1A63D70F4A302DBF426CA5AD"
 _EXPO_TOKEN_URL = "https://exp.host/--/api/v2/push/getExpoPushToken"
 _RUST_PUSH_REGISTER_URL = "https://companion-rust.facepunch.com:443/api/push/register"
+_RUST_PUSH_UNREGISTER_URL = "https://companion-rust.facepunch.com:443/api/push/unregister"
 _RUST_LOGIN_URL = "https://companion-rust.facepunch.com/login"
 
 StatusCallback = Callable[[str], None]
@@ -98,6 +99,11 @@ def register_fcm_config(
             timezone.utc
         ).isoformat(timespec="seconds"),
         "receiver_registration_mode": "new_identity",
+        "facepunch_registered": True,
+        "last_facepunch_refresh": datetime.now(
+            timezone.utc
+        ).isoformat(timespec="seconds"),
+        "last_facepunch_refresh_status": "confirmed",
     }
     save_fcm_config(output_path, config)
     try:
@@ -203,6 +209,107 @@ def _register_with_rust_plus(
 
 
 
+
+def _unregister_with_rust_plus(
+    auth_token: str,
+    expo_push_token: str,
+) -> None:
+    payload = json.dumps(
+        {
+            "AuthToken": auth_token,
+            "PushToken": expo_push_token,
+        }
+    ).encode("utf-8")
+    request = urllib.request.Request(
+        _RUST_PUSH_UNREGISTER_URL,
+        data=payload,
+        headers={
+            "Authorization": f"Bearer {auth_token}",
+            "Content-Type": "application/json",
+            "User-Agent": "RustCompanionPlus/1.0",
+        },
+        method="DELETE",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=30) as response:
+            status = int(getattr(response, "status", 200))
+            response.read()
+    except urllib.error.HTTPError as exc:
+        if exc.code in {404, 410}:
+            return
+        detail = exc.read().decode("utf-8", errors="replace")
+        raise FCMRegistrationError(
+            f"Facepunch unregister returned HTTP {exc.code}: "
+            f"{detail[:160]}"
+        ) from exc
+    except urllib.error.URLError as exc:
+        raise FCMRegistrationError(
+            "Could not reach Facepunch unregister: "
+            f"{exc.reason}"
+        ) from exc
+
+    if not 200 <= status < 300:
+        raise FCMRegistrationError(
+            f"Facepunch unregister returned HTTP {status}."
+        )
+
+
+def unregister_fcm_registration(
+    config: dict[str, Any],
+    *,
+    output_path: Path = FCM_CONFIG_PATH,
+    status: StatusCallback | None = None,
+    push_unregistrar: Callable[[str, str], None] | None = None,
+) -> bool:
+    # Remove only this desktop Expo token from Facepunch.
+    announce = status or (lambda _message: None)
+    unregistrar = push_unregistrar or _unregister_with_rust_plus
+    auth_token = str(config.get("rustplus_auth_token") or "").strip()
+    expo_push_token = str(config.get("expo_push_token") or "").strip()
+    if not auth_token or not expo_push_token:
+        announce(
+            "Desktop receiver has no complete Facepunch registration "
+            "metadata to remove."
+        )
+        return False
+
+    announce("Removing the temporary desktop receiver from Facepunch...")
+    _call(
+        "Facepunch push unregister",
+        unregistrar,
+        auth_token,
+        expo_push_token,
+    )
+    config["facepunch_registered"] = False
+    config["last_facepunch_unregister"] = datetime.now(
+        timezone.utc
+    ).isoformat(timespec="seconds")
+    config["last_facepunch_unregister_status"] = "confirmed"
+    config["receiver_registration_mode"] = "dormant_identity"
+    save_fcm_config(output_path, config)
+    announce(
+        "Temporary desktop receiver removed. Saved Rust+ server "
+        "profiles remain usable."
+    )
+    return True
+
+
+def cleanup_lingering_fcm_registration(
+    config: dict[str, Any],
+    *,
+    output_path: Path = FCM_CONFIG_PATH,
+    status: StatusCallback | None = None,
+    push_unregistrar: Callable[[str, str], None] | None = None,
+) -> bool:
+    # Clean configs created before pairing-only receiver lifecycle.
+    if config.get("facepunch_registered") is False:
+        return False
+    return unregister_fcm_registration(
+        config,
+        output_path=output_path,
+        status=status,
+        push_unregistrar=push_unregistrar,
+    )
 def refresh_fcm_registration(
     config: dict[str, Any],
     *,
@@ -250,7 +357,8 @@ def refresh_fcm_registration(
         timezone.utc
     ).isoformat(timespec="seconds")
     config["last_facepunch_refresh_status"] = "confirmed"
-    config["receiver_registration_mode"] = "existing_identity_refresh"
+    config["receiver_registration_mode"] = "temporary_pairing_receiver"
+    config["facepunch_registered"] = True
 
     save_fcm_config(output_path, config)
     try:

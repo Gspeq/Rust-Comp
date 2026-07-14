@@ -22,6 +22,8 @@ from rust_companion_plus.services.fcm_registration import (
     FCMRegistrationError,
     refresh_fcm_registration,
     request_or_register_fcm_config,
+    cleanup_lingering_fcm_registration,
+    unregister_fcm_registration,
 )
 from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
@@ -619,6 +621,42 @@ def _find_fcm_config() -> dict[str, Any] | None:
 def _request_fcm_config() -> dict[str, Any] | None:
     return request_or_register_fcm_config()
 
+
+def _cleanup_lingering_receiver_at_startup() -> None:
+    config = _find_fcm_config()
+    if not config or config.get("facepunch_registered") is False:
+        return
+    try:
+        cleaned = cleanup_lingering_fcm_registration(
+            config,
+            status=lambda message: print(
+                f"[PAIRING RECEIVER] {message}"
+            ),
+        )
+    except FCMRegistrationError as exc:
+        print(
+            _paint(
+                "[PAIRING RECEIVER WARNING] A legacy persistent "
+                f"desktop registration could not be removed yet: {exc}",
+                YELLOW,
+            )
+        )
+        print(
+            _paint(
+                "The launcher will retry cleanup next time. "
+                "Saved server profiles are unaffected.",
+                GRAY,
+            )
+        )
+        return
+    if cleaned:
+        print(
+            _paint(
+                "[PAIRING RECEIVER] Legacy persistent registration "
+                "was removed. Future receivers are pairing-only.",
+                GREEN,
+            )
+        )
 def _listen_for_pairing(
     current: RustCredentials,
     expected_host: str,
@@ -627,39 +665,6 @@ def _listen_for_pairing(
     config = _find_fcm_config() or _request_fcm_config()
     if config is None:
         return ""
-
-    try:
-        refreshed_config = refresh_fcm_registration(
-            config,
-            status=lambda message: print(
-                f"[PAIRING SETUP] {message}"
-            ),
-        )
-        if refreshed_config is not None:
-            config = refreshed_config
-        else:
-            print(
-                _paint(
-                    "[PAIRING SETUP WARNING] The saved receiver lacks "
-                    "the metadata required for an automatic Facepunch "
-                    "refresh. Continuing with its existing FCM identity.",
-                    YELLOW,
-                )
-            )
-    except FCMRegistrationError as exc:
-        print(
-            _paint(
-                "[PAIRING SETUP WARNING] The saved receiver could not be "
-                f"refreshed: {exc}",
-                YELLOW,
-            )
-        )
-        print(
-            _paint(
-                "Continuing with the existing receiver registration.",
-                GRAY,
-            )
-        )
 
     print()
     print(_paint("PAIRING RECEIVER CONNECTING", CYAN, bold=True))
@@ -678,111 +683,147 @@ def _listen_for_pairing(
         print(
             _paint(
                 "[PAIRING RECEIVER] Login readiness was not confirmed, "
-                "but the listener thread is alive. Extending stale-push "
-                "cleanup before arming.",
+                "but the listener is alive. Extending stale cleanup.",
                 YELLOW,
             )
         )
 
     print(
         _paint(
-            "[FRESHNESS GATE] Clearing queued or replayed Rust+ pushes...",
+            "[FRESHNESS GATE] Clearing queued Rust+ pushes before "
+            "activating the temporary receiver...",
             YELLOW,
-        )
-    )
-    print(
-        _paint(
-            "Keep the official Rust+ phone paired. Do not press Pair, "
-            "Retry, or Resend during this short synchronization.",
-            WHITE,
         )
     )
     discarded = inbox.drain_replayed(
         quiet_period=2.0 if ready else 3.0,
         max_wait=12.0 if ready else 16.0,
-        process_alive=lambda: (
-            finder.get_rust_process_session().running
-        ),
+        process_alive=lambda: finder.get_rust_process_session().running,
     )
 
-    print()
-    print(
-        _paint(
-            "PAIRING RECEIVER ARMED FOR A FRESH REQUEST",
-            GREEN,
-            bold=True,
+    registered = False
+    try:
+        refreshed = refresh_fcm_registration(
+            config,
+            status=lambda message: print(
+                f"[PAIRING SETUP] {message}"
+            ),
         )
-    )
-    print(_paint("No Enter key is required.", GREEN, bold=True))
-    print(
-        _paint(
-            "NOW perform exactly one action in Rust:",
-            WHITE,
-            bold=True,
-        )
-    )
-    print(
-        "  - New server: choose Pair With Server and complete any normal "
-        "phone confirmation."
-    )
-    print(
-        "  - Already paired: choose Retry Pairing or Resend Pairing "
-        "Request once."
-    )
-    print(
-        _paint(
-            "Do not unpair or disable Rust+ on the phone. The desktop "
-            "receiver is an additional registered device.",
-            YELLOW,
-        )
-    )
-    if discarded:
+        if refreshed is None:
+            print(
+                _paint(
+                    "[PAIRING SETUP FAILED] The temporary receiver "
+                    "could not be activated.",
+                    RED,
+                    bold=True,
+                )
+            )
+            return ""
+        config = refreshed
+        registered = True
+
+        print()
         print(
             _paint(
-                f"[FRESHNESS GATE] Discarded {discarded} queued "
-                "pairing payload(s).",
+                "PAIRING RECEIVER ARMED FOR A FRESH REQUEST",
+                GREEN,
+                bold=True,
+            )
+        )
+        print(
+            _paint(
+                "This desktop receiver is temporary and will be "
+                "removed automatically after this attempt.",
+                GREEN,
+            )
+        )
+        print(_paint("No Enter key is required.", GREEN, bold=True))
+        print(
+            _paint(
+                "NOW perform exactly one action in Rust:",
+                WHITE,
+                bold=True,
+            )
+        )
+        print("  - If Rust shows Pair With Server, choose it once.")
+        print(
+            "  - If Rust still shows notifications enabled, reopen the "
+            "Rust+ menu after cleanup and use Resend once if needed."
+        )
+        print(
+            _paint(
+                "Only this desktop Expo token is temporary. The official "
+                "phone registration is not removed.",
                 YELLOW,
             )
         )
-    print(
-        _paint(
-            "Waiting for the fresh request and final player token. "
-            "Ctrl+C cancels.",
-            GRAY,
-        )
-    )
-
-    record = inbox.wait_for(
-        expected_host,
-        process_alive=lambda: (
-            finder.get_rust_process_session().running
-        ),
-    )
-    if record is None:
+        if discarded:
+            print(
+                _paint(
+                    f"[FRESHNESS GATE] Discarded {discarded} queued "
+                    "pairing payload(s).",
+                    YELLOW,
+                )
+            )
         print(
             _paint(
-                "[PAIRING STOPPED] Rust closed before a fresh "
-                "notification arrived.",
-                YELLOW,
+                "Waiting for the fresh request and final player token. "
+                "Ctrl+C cancels.",
+                GRAY,
             )
         )
-        return ""
 
-    if not _apply_pairing_record(
-        current,
-        record,
-        expected_host,
-    ):
-        return ""
-    print(
-        _paint(
-            "[PAIRING RECEIVED] Fresh port, Steam ID, and player token "
-            "imported automatically.",
-            GREEN,
-            bold=True,
+        record = inbox.wait_for(
+            expected_host,
+            process_alive=lambda: finder.get_rust_process_session().running,
         )
-    )
-    return record.source
+        if record is None:
+            print(
+                _paint(
+                    "[PAIRING STOPPED] Rust closed before a fresh "
+                    "notification arrived.",
+                    YELLOW,
+                )
+            )
+            return ""
+        if not _apply_pairing_record(current, record, expected_host):
+            return ""
+        print(
+            _paint(
+                "[PAIRING RECEIVED] Fresh port, Steam ID, and player "
+                "token imported automatically.",
+                GREEN,
+                bold=True,
+            )
+        )
+        return record.source
+    except FCMRegistrationError as exc:
+        print(_paint(f"[PAIRING SETUP FAILED] {exc}", RED, bold=True))
+        return ""
+    finally:
+        if registered or config.get("facepunch_registered") is not False:
+            try:
+                unregister_fcm_registration(
+                    config,
+                    status=lambda message: print(
+                        f"[PAIRING CLEANUP] {message}"
+                    ),
+                )
+            except FCMRegistrationError as exc:
+                print(
+                    _paint(
+                        "[PAIRING CLEANUP WARNING] The temporary desktop "
+                        f"receiver could not be removed: {exc}",
+                        YELLOW,
+                    )
+                )
+                print(
+                    _paint(
+                        "Cleanup will be retried on the next launcher start.",
+                        GRAY,
+                    )
+                )
+
 
 
 
@@ -1230,6 +1271,7 @@ def main(
     if args.reset_integration_setup:
         store.set("launcher_setup_version", 0)
     configure_first_run(store)
+    _cleanup_lingering_receiver_at_startup()
 
     try:
         if args.saved_profile:
