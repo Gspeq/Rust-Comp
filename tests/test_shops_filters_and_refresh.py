@@ -13,10 +13,11 @@ from rust_companion_plus.services.item_catalog import (
 from rust_companion_plus.ui.tabs.shops import (
     ShopFilters,
     collect_shop_rows,
+    rust_grid_reference,
 )
 
 
-class ShopFiltersAndRefreshTests(unittest.TestCase):
+class ShopGridAndDesignTests(unittest.TestCase):
     def setUp(self) -> None:
         self.labels = {
             100: "Assault Rifle",
@@ -28,8 +29,8 @@ class ShopFiltersAndRefreshTests(unittest.TestCase):
             {
                 "type": 3,
                 "name": "Outpost Guns",
-                "x": 123.4,
-                "y": 456.7,
+                "x": 1000,
+                "y": 1000,
                 "sell_orders": [
                     {
                         "item_id": 100,
@@ -79,25 +80,44 @@ class ShopFiltersAndRefreshTests(unittest.TestCase):
     def rows(self, **kwargs):
         return collect_shop_rows(
             self.markers,
+            map_size=3800,
             label=self.label,
             search_text=self.search_text,
             filters=ShopFilters(**kwargs),
         )
 
     def test_rustplus_refresh_is_three_seconds(self) -> None:
-        self.assertEqual(3_000, RustCompanionApp.RUSTPLUS_INTERVAL_MS)
+        self.assertEqual(
+            3_000,
+            RustCompanionApp.RUSTPLUS_INTERVAL_MS,
+        )
+
+    def test_official_rustplus_grid_conversion(self) -> None:
+        self.assertEqual(
+            "G19",
+            rust_grid_reference(1000, 1000, 3800),
+        )
+
+    def test_grid_and_coordinates_are_in_result(self) -> None:
+        rows = self.rows(location_query="G19")
+        self.assertEqual(2, len(rows))
+        self.assertEqual("G19", rows[0].grid)
+        self.assertEqual("1000, 1000", rows[0].coordinates)
+        self.assertIn("G19", rows[0].trade_sentence)
 
     def test_buy_search_matches_item_being_sold(self) -> None:
         rows = self.rows(buy_query="assault")
         self.assertEqual(2, len(rows))
-        self.assertTrue(all(row.item_id == 100 for row in rows))
+        self.assertTrue(
+            all(row.item_id == 100 for row in rows)
+        )
 
     def test_sell_search_matches_currency_shop_wants(self) -> None:
         rows = self.rows(sell_query="scrap")
         self.assertEqual(1, len(rows))
         self.assertEqual(200, rows[0].currency_id)
 
-    def test_stock_price_blueprint_and_position_filters(self) -> None:
+    def test_stock_price_blueprint_filters(self) -> None:
         rows = self.rows(
             in_stock_only=True,
             max_cost=100,
@@ -105,14 +125,13 @@ class ShopFiltersAndRefreshTests(unittest.TestCase):
         )
         self.assertEqual(1, len(rows))
         row = rows[0]
-        self.assertEqual(800.0, row.x)
-        self.assertEqual(900.0, row.y)
         self.assertEqual(25, row.cost)
-        self.assertEqual("Sells BP", row.flags)
+        self.assertEqual("Sells BP", row.offer_type)
 
-    def test_highest_stock_sort(self) -> None:
-        rows = self.rows(sort_mode="Highest stock")
-        self.assertEqual([8, 3, 0], [row.stock for row in rows])
+    def test_grid_sort(self) -> None:
+        rows = self.rows(sort_mode="Grid")
+        grids = [row.grid for row in rows]
+        self.assertEqual(sorted(grids), grids)
 
     def test_item_catalog_parses_names_and_shortnames(self) -> None:
         entries = parse_item_catalog(
@@ -120,14 +139,22 @@ class ShopFiltersAndRefreshTests(unittest.TestCase):
                 "items": [
                     {
                         "itemId": 100,
-                        "displayName": {"english": "Assault Rifle"},
+                        "displayName": {
+                            "english": "Assault Rifle"
+                        },
                         "shortname": "rifle.ak",
                     }
                 ]
             }
         )
-        self.assertEqual("Assault Rifle", entries[100].name)
-        self.assertEqual("rifle.ak", entries[100].shortname)
+        self.assertEqual(
+            "Assault Rifle",
+            entries[100].name,
+        )
+        self.assertEqual(
+            "rifle.ak",
+            entries[100].shortname,
+        )
 
     def test_item_catalog_caches_and_searches(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
@@ -144,9 +171,17 @@ class ShopFiltersAndRefreshTests(unittest.TestCase):
             )
             self.assertEqual(1, catalog.load(force=True))
             self.assertEqual("Scrap", catalog.label(200))
-            self.assertIn("scrap", catalog.search_text(200))
-            saved = json.loads(cache.read_text(encoding="utf-8"))
-            self.assertEqual("Scrap", saved["items"]["200"]["name"])
+            self.assertIn(
+                "scrap",
+                catalog.search_text(200),
+            )
+            saved = json.loads(
+                cache.read_text(encoding="utf-8")
+            )
+            self.assertEqual(
+                "Scrap",
+                saved["items"]["200"]["name"],
+            )
 
 
 if __name__ == "__main__":
