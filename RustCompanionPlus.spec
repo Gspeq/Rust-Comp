@@ -1,4 +1,4 @@
-# -*- mode: python ; coding: utf-8 -*-
+﻿# -*- mode: python ; coding: utf-8 -*-
 from pathlib import Path
 
 from PyInstaller.utils.hooks import collect_all
@@ -10,6 +10,7 @@ hiddenimports = [
     "rust_companion_plus.app",
     "rust_companion_plus.bootstrap",
     "rust_companion_plus.services.pairing",
+    "rust_companion_plus.services.fcm_registration",
     "rust_companion_plus.services.server_finder",
     "rust_companion_plus.services.rustplus_client",
     "push_receiver",
@@ -21,7 +22,7 @@ hiddenimports = [
     "oscrypto",
 ]
 
-for package in ("customtkinter", "rustplus", "push_receiver", "PIL", "platformdirs"):
+for package in ("customtkinter", "rustplus", "push_receiver", "PIL", "platformdirs", "webview"):
     try:
         package_datas, package_binaries, package_hidden = collect_all(package)
     except Exception:
@@ -65,3 +66,4 @@ exe = EXE(
     codesign_identity=None,
     entitlements_file=None,
 )
+

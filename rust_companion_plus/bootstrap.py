@@ -1,4 +1,4 @@
-from __future__ import annotations
+﻿from __future__ import annotations
 
 import argparse
 import os
@@ -17,6 +17,7 @@ from rust_companion_plus.services.pairing import (
     parse_pairing_payload,
     save_fcm_config,
 )
+from rust_companion_plus.services.fcm_registration import request_or_register_fcm_config
 from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
 from rust_companion_plus.storage import JsonStore
@@ -342,19 +343,7 @@ def _find_fcm_config() -> dict[str, Any] | None:
 
 
 def _request_fcm_config() -> dict[str, Any] | None:
-    print(_paint("Paste the rustplus.py FCM config JSON or its file path.", WHITE))
-    print(_paint("Press Enter to return to the profile menu.", GRAY))
-    raw = input(_paint("> FCM config JSON / path: ", AMBER)).strip()
-    if not raw:
-        return None
-    config = load_fcm_config(raw)
-    if config is None:
-        print(_paint("[INVALID] That is not a rustplus.py FCM configuration.", RED))
-        return None
-    save_fcm_config(FCM_CONFIG_PATH, config)
-    print(_paint(f"[SAVED] Pairing receiver configuration: {FCM_CONFIG_PATH}", GREEN))
-    return config
-
+    return request_or_register_fcm_config()
 
 def _listen_for_pairing(
     current: RustCredentials,
@@ -565,7 +554,7 @@ def prepare_credentials(store: JsonStore, report: DetectionReport) -> RustCreden
 def launch_gui() -> int:
     from rust_companion_plus.app import RustCompanionApp
 
-    print(_paint("\nALL GATES GREEN — launching Rust Companion+ with the verified live profile.\n", GREEN, bold=True))
+    print(_paint("\nALL GATES GREEN â€” launching Rust Companion+ with the verified live profile.\n", GREEN, bold=True))
     app = RustCompanionApp()
     app.mainloop()
     return 0
@@ -607,3 +596,4 @@ def main(argv: list[str] | None = None) -> int:
 
 if __name__ == "__main__":
     raise SystemExit(main(sys.argv[1:]))
+
