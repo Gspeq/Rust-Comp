@@ -14,6 +14,8 @@ DEFAULT_STORE: dict[str, Any] = {
     "credential_profile_metadata": {},
     "player_identity": {},
     "bootstrap_snapshot": {},
+    "saved_server_profiles": {},
+    "active_server_profile_key": "",
     "api_keys": {},
     "launcher_setup_complete": False,
     "launcher_setup_version": 0,

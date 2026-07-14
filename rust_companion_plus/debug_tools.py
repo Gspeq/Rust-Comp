@@ -704,6 +704,12 @@ def create_debug_bundle(output_path: Path | None = None) -> Path:
             "rust_companion_plus/services/pairing.py",
             "rust_companion_plus/services/fcm_registration.py",
             "rust_companion_plus/services/rustplus_client.py",
+            "rust_companion_plus/services/server_profiles.py",
+            "rust_companion_plus/app.py",
+            "rust_companion_plus/ui/tabs/map_tab.py",
+        "rust_companion_plus/services/server_profiles.py",
+        "rust_companion_plus/app.py",
+        "rust_companion_plus/ui/tabs/map_tab.py",
         "rust_companion_plus/services/item_catalog.py",
         "rust_companion_plus/ui/tabs/shops.py",
             "rust_companion_plus/services/item_catalog.py",
@@ -733,6 +739,80 @@ def create_debug_bundle(output_path: Path | None = None) -> Path:
 
 
 
+
+
+def _saved_profile_summary(
+    store: dict[str, Any],
+) -> list[dict[str, Any]]:
+    raw = store.get("saved_server_profiles", {})
+    if not isinstance(raw, dict):
+        return []
+    rows: list[dict[str, Any]] = []
+    for key, value in raw.items():
+        if not isinstance(value, dict):
+            continue
+        snapshot = (
+            value.get("snapshot")
+            if isinstance(value.get("snapshot"), dict)
+            else {}
+        )
+        team = snapshot.get("team")
+        markers = snapshot.get("markers")
+        assets = (
+            value.get("assets")
+            if isinstance(value.get("assets"), dict)
+            else {}
+        )
+        rows.append(
+            {
+                "key": str(key),
+                "name": value.get("name", ""),
+                "game_endpoint": value.get(
+                    "game_endpoint",
+                    "",
+                ),
+                "rustplus_endpoint": value.get(
+                    "rustplus_endpoint",
+                    "",
+                ),
+                "saved_at": value.get("saved_at", ""),
+                "live_updated_at": value.get(
+                    "live_updated_at",
+                    "",
+                ),
+                "team_members": (
+                    len(team)
+                    if isinstance(team, list)
+                    else 0
+                ),
+                "markers": (
+                    len(markers)
+                    if isinstance(markers, list)
+                    else 0
+                ),
+                "has_map_image": bool(
+                    assets.get("map_image_path")
+                ),
+                "has_parsed_map": bool(
+                    assets.get("parsed_map_dir")
+                ),
+                "has_raw_map": bool(
+                    assets.get("raw_map_path")
+                ),
+                "map_url_present": bool(
+                    assets.get("map_url")
+                ),
+            }
+        )
+    rows.sort(
+        key=lambda row: str(
+            row.get("live_updated_at")
+            or row.get("saved_at")
+            or ""
+        ),
+        reverse=True,
+    )
+    return rows
 
 def create_review_report(
     output_path: Path | None = None,
@@ -1059,6 +1139,16 @@ def create_review_report(
             "credential_profiles": profiles,
             "credential_profile_metadata": (
                 profile_metadata
+            ),
+            "saved_server_profiles": (
+                _saved_profile_summary(store)
+                if isinstance(store, dict)
+                else []
+            ),
+            "active_server_profile_key": (
+                store.get("active_server_profile_key", "")
+                if isinstance(store, dict)
+                else ""
             ),
             "signed_player_token_supported": True,
         },

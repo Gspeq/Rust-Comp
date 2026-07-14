@@ -25,6 +25,7 @@ from rust_companion_plus.services.fcm_registration import (
 )
 from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
+from rust_companion_plus.services.server_profiles import ServerProfileVault
 from rust_companion_plus.storage import JsonStore
 
 
@@ -128,6 +129,176 @@ def _status_line(message: str, color: str = CYAN) -> None:
     timestamp = time.strftime("%H:%M:%S")
     print(f"{_paint('[' + timestamp + ']', GRAY)} {_paint(message, color)}")
 
+
+
+def _saved_profile_time(record: dict[str, Any]) -> str:
+    raw = str(
+        record.get("live_updated_at")
+        or record.get("saved_at")
+        or ""
+    )
+    if not raw:
+        return "unknown"
+    return raw.replace("T", " ")[:19]
+
+
+def _choose_saved_profile(
+    vault: ServerProfileVault,
+) -> str:
+    while True:
+        profiles = vault.list_profiles()
+        print()
+        _rule("=", color=CYAN)
+        print(
+            _paint(
+                "SAVED SERVER PROFILES",
+                CYAN,
+                bold=True,
+            )
+        )
+        if not profiles:
+            print(
+                _paint(
+                    "No saved server profiles exist yet. "
+                    "Run a live session and choose Yes when closing.",
+                    YELLOW,
+                )
+            )
+            _rule("=", color=CYAN)
+            return ""
+
+        for index, record in enumerate(
+            profiles,
+            start=1,
+        ):
+            name = str(
+                record.get("name")
+                or record.get("key")
+                or "Unnamed server"
+            )
+            game_endpoint = str(
+                record.get("game_endpoint")
+                or record.get("key")
+                or "?"
+            )
+            rustplus_endpoint = str(
+                record.get("rustplus_endpoint") or "?"
+            )
+            summary = (
+                record.get("summary")
+                if isinstance(record.get("summary"), dict)
+                else {}
+            )
+            print(
+                _paint(
+                    f"  [{index}] {name}",
+                    WHITE,
+                    bold=True,
+                )
+            )
+            print(
+                _paint(
+                    "      "
+                    f"Game {game_endpoint}  |  "
+                    f"Rust+ {rustplus_endpoint}  |  "
+                    f"Saved/live {_saved_profile_time(record)}",
+                    GRAY,
+                )
+            )
+            print(
+                _paint(
+                    "      "
+                    f"Map {summary.get('map') or '?'}  |  "
+                    f"Size {summary.get('world_size') or '?'}  |  "
+                    f"Cached team {summary.get('team_members', 0)}  |  "
+                    f"Markers {summary.get('markers', 0)}",
+                    GRAY,
+                )
+            )
+
+        print(_paint("  [B] Back", GRAY))
+        _rule("=", color=CYAN)
+        choice = input(
+            _paint(
+                "> Select a saved profile number or B: ",
+                AMBER,
+            )
+        ).strip().casefold()
+        if choice == "b":
+            return ""
+        try:
+            index = int(choice)
+        except ValueError:
+            print(
+                _paint(
+                    "Enter a profile number or B.",
+                    RED,
+                )
+            )
+            continue
+        if not 1 <= index <= len(profiles):
+            print(
+                _paint(
+                    "That saved profile number does not exist.",
+                    RED,
+                )
+            )
+            continue
+        return str(
+            profiles[index - 1].get("key") or ""
+        )
+
+
+def choose_launch_mode(
+    store: JsonStore,
+) -> tuple[str, str]:
+    vault = ServerProfileVault(store)
+    while True:
+        profiles = vault.list_profiles()
+        print()
+        print(
+            _paint(
+                "LAUNCH MODE",
+                ORANGE,
+                bold=True,
+            )
+        )
+        print(
+            "  [L] Live session — wait for Rust and detect "
+            "the server you join"
+        )
+        saved_label = (
+            f" — {len(profiles)} profile(s) available"
+            if profiles
+            else " — none saved yet"
+        )
+        print(
+            "  [S] View saved server profile"
+            f"{saved_label}"
+        )
+        print("  [Q] Quit")
+        choice = input(
+            _paint(
+                "> Select L / S / Q: ",
+                AMBER,
+            )
+        ).strip().casefold()
+
+        if choice == "l":
+            return "live", ""
+        if choice == "q":
+            return "quit", ""
+        if choice == "s":
+            key = _choose_saved_profile(vault)
+            if key:
+                return "saved", key
+            continue
+        print(
+            _paint(
+                "Choose L, S, or Q.",
+                RED,
+            )
+        )
 
 def wait_for_server(store: JsonStore) -> DetectionReport:
     finder = RustServerFinder(store)
@@ -957,29 +1128,92 @@ def prepare_credentials(store: JsonStore, report: DetectionReport) -> RustCreden
     return current
 
 
-def launch_gui() -> int:
+
+def launch_gui(
+    saved_profile_key: str = "",
+) -> int:
     from rust_companion_plus.app import RustCompanionApp
 
-    print(_paint("\nALL GATES GREEN — launching Rust Companion+ with the verified live profile.\n", GREEN, bold=True))
-    app = RustCompanionApp()
+    if saved_profile_key:
+        print(
+            _paint(
+                "\nOPENING SAVED SERVER PROFILE — Rust process "
+                "detection is skipped. Cached data loads immediately; "
+                "saved Rust+ credentials continue refreshing when the "
+                "server and internet are reachable.\n",
+                GREEN,
+                bold=True,
+            )
+        )
+    else:
+        print(
+            _paint(
+                "\nALL GATES GREEN — launching Rust Companion+ "
+                "with the verified live profile.\n",
+                GREEN,
+                bold=True,
+            )
+        )
+
+    app = (
+        RustCompanionApp(
+            saved_profile_key=saved_profile_key,
+        )
+        if saved_profile_key
+        else RustCompanionApp()
+    )
     app.mainloop()
     return 0
 
 
-def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
+
+
+def _parse_args(
+    argv: list[str] | None = None,
+) -> argparse.Namespace:
     parser = argparse.ArgumentParser()
     parser.add_argument("--data-dir", action="store_true")
-    parser.add_argument("--open-data-folder", action="store_true")
-    parser.add_argument("--reset-integration-setup", action="store_true")
+    parser.add_argument(
+        "--open-data-folder",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--reset-integration-setup",
+        action="store_true",
+    )
+    parser.add_argument(
+        "--saved-profile",
+        default="",
+        help=(
+            "Open one saved game-server profile without "
+            "waiting for Rust."
+        ),
+    )
     return parser.parse_args(argv)
 
 
-def main(argv: list[str] | None = None) -> int:
+
+
+def main(
+    argv: list[str] | None = None,
+) -> int:
     # RUST_COMPANION_DIAGNOSTICS_BEGIN
-    if os.environ.get("RUST_COMPANION_DEBUG", "").strip().casefold() in {"1", "true", "yes", "on"}:
-        from rust_companion_plus.debug_tools import install_debug_runtime
+    if os.environ.get(
+        "RUST_COMPANION_DEBUG",
+        "",
+    ).strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }:
+        from rust_companion_plus.debug_tools import (
+            install_debug_runtime,
+        )
+
         install_debug_runtime(sys.modules[__name__])
     # RUST_COMPANION_DIAGNOSTICS_END
+
     args = _parse_args(argv)
     if args.data_dir:
         print(APP_DATA_DIR)
@@ -996,13 +1230,40 @@ def main(argv: list[str] | None = None) -> int:
     if args.reset_integration_setup:
         store.set("launcher_setup_version", 0)
     configure_first_run(store)
+
     try:
+        if args.saved_profile:
+            vault = ServerProfileVault(store)
+            if vault.get(args.saved_profile) is None:
+                print(
+                    _paint(
+                        "[SAVED PROFILE NOT FOUND] "
+                        f"{args.saved_profile}",
+                        RED,
+                        bold=True,
+                    )
+                )
+                return 2
+            return launch_gui(args.saved_profile)
+
+        mode, saved_key = choose_launch_mode(store)
+        if mode == "quit":
+            return 0
+        if mode == "saved":
+            return launch_gui(saved_key)
+
         report = wait_for_server(store)
         prepare_credentials(store, report)
         return launch_gui()
     except KeyboardInterrupt:
-        print(_paint("\nLauncher stopped. The GUI was not opened.", YELLOW))
+        print(
+            _paint(
+                "\nLauncher stopped. The GUI was not opened.",
+                YELLOW,
+            )
+        )
         return 130
+
 
 
 if __name__ == "__main__":
