@@ -540,7 +540,6 @@ class ElectricalTab(ctk.CTkFrame):
                 self.palette_scroll,
                 text=text,
                 anchor="w",
-                justify="left",
                 height=48,
                 fg_color="#172033",
                 hover_color="#24324a",
