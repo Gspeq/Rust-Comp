@@ -56,7 +56,7 @@ class MapTab(ctk.CTkFrame):
         title.grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
             title,
-            text="Map & Resource Heatmaps",
+            text="Map Intelligence & Heatmaps",
             font=ctk.CTkFont(size=28, weight="bold"),
             anchor="w",
         ).grid(row=0, column=0, sticky="w")
@@ -88,7 +88,7 @@ class MapTab(ctk.CTkFrame):
 
         self.parse_button = ctk.CTkButton(
             header,
-            text="Parse current map",
+            text="Analyze current map",
             command=self.parse_current_map,
             width=160,
         )
@@ -345,7 +345,7 @@ class MapTab(ctk.CTkFrame):
         )
         self.hotspot_box.insert(
             "1.0",
-            "Load or parse this server's map, select layers, then rank hotspots.",
+            "Load or analyze this server's map, select layers, then rank terrain/habitat hotspots.",
         )
 
     def _build_manual_controls(self, parent) -> None:
@@ -601,7 +601,7 @@ class MapTab(ctk.CTkFrame):
                 messagebox.showinfo(
                     "No saved parsed map",
                     "No parsed map is associated with this server profile yet. "
-                    "Use Parse current map; the app will locate the map and parser automatically.",
+                    "Use Analyze current map; the app will locate the map and parser automatically.",
                 )
                 return
             self._set_profile_asset(
@@ -623,7 +623,9 @@ class MapTab(ctk.CTkFrame):
         run_in_worker(self, work, success, error)
 
     def parse_current_map(self) -> None:
-        key = str(self.context.active_profile_key or "").strip()
+        key = str(
+            self.context.active_profile_key or ""
+        ).strip()
         if not key:
             messagebox.showerror(
                 "No server profile",
@@ -633,28 +635,51 @@ class MapTab(ctk.CTkFrame):
 
         self.parse_button.configure(
             state="disabled",
-            text="Parsing current map…",
+            text="Analyzing current map…",
         )
         self.map_status.configure(
             text=(
-                "Locating the current server map and MapParser.exe automatically…"
+                "Running the built-in terrain, biome, ore-likelihood, "
+                "animal-habitat, road, and coastline analyzer…"
             )
         )
         world_size = self.current_world_size()
 
         def work():
-            return parse_current_server_map(
+            image = self.context.map_image
+            if image is None:
+                if not self.context.credentials.is_complete():
+                    raise ValueError(
+                        "The current server has no complete Rust+ profile "
+                        "and no saved map image."
+                    )
+                image = self.context.rust.fetch_map(
+                    self.context.credentials
+                )
+
+            snapshot = self.context.snapshot
+            markers = (
+                list(snapshot.markers)
+                if snapshot is not None
+                else []
+            )
+            result = parse_current_server_map(
                 key=key,
                 detection=self.context.detection,
                 profile_record=self.context.profile_record,
                 world_size=world_size,
+                map_image=image,
+                markers=markers,
             )
+            return result, image
 
-        def success(result) -> None:
+        def success(payload) -> None:
+            result, image = payload
             self.parse_button.configure(
                 state="normal",
-                text="Parse current map",
+                text="Analyze current map",
             )
+            self.context.map_image = image
             self._set_profile_asset(
                 "parsed_map_dir",
                 str(result.source_dir),
@@ -669,6 +694,25 @@ class MapTab(ctk.CTkFrame):
                     "map_url",
                     result.map_url,
                 )
+
+            key_value = str(
+                self.context.active_profile_key or ""
+            ).strip()
+            vault = self.context.profile_vault
+            if key_value and vault is not None:
+                try:
+                    saved = vault.save_map_image(
+                        key_value,
+                        image,
+                    )
+                except Exception:
+                    saved = ""
+                if saved:
+                    self._set_profile_asset(
+                        "map_image_path",
+                        saved,
+                    )
+
             self.load_heatmap_source(
                 result.source_dir,
                 quiet=not result.created,
@@ -676,30 +720,40 @@ class MapTab(ctk.CTkFrame):
             if result.created:
                 self.map_status.configure(
                     text=(
-                        "Current server map parsed and attached to this profile."
+                        "Built-in map analysis complete. Static terrain "
+                        "layers are map-derived; ore and animal layers are "
+                        "clearly labeled suitability estimates because live "
+                        "spawns are dynamic."
                     )
                 )
             else:
                 self.map_status.configure(
                     text=(
-                        "This server map was already parsed; the saved data was loaded."
+                        "This server's built-in map analysis was already "
+                        "saved and has been loaded."
                     )
                 )
 
         def error(exc: Exception) -> None:
             self.parse_button.configure(
                 state="normal",
-                text="Parse current map",
+                text="Analyze current map",
             )
             self.map_status.configure(
-                text="Current map parsing failed."
+                text="Built-in current map analysis failed."
             )
             messagebox.showerror(
-                "Current map parsing failed",
+                "Current map analysis failed",
                 str(exc),
             )
 
-        run_in_worker(self, work, success, error)
+        run_in_worker(
+            self,
+            work,
+            success,
+            error,
+        )
+
 
     def load_heatmap_source(
         self,

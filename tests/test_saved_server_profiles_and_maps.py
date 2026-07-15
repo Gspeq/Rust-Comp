@@ -225,11 +225,12 @@ class SavedServerProfileTests(unittest.TestCase):
         source = inspect.getsource(MapTab)
         self.assertIn("Load current map", source)
         self.assertIn("View saved parsed map", source)
-        self.assertIn("Parse current map", source)
+        self.assertIn("Analyze current map", source)
         self.assertNotIn("askopenfilename", source)
         self.assertNotIn("askdirectory", source)
         self.assertNotIn("Import parsed folder", source)
         self.assertNotIn("Auto-detect cache", source)
+        self.assertNotIn("MapParser.exe", source)
 
     def test_app_has_close_save_prompt_and_profile_mode(self) -> None:
         source = inspect.getsource(RustCompanionApp)

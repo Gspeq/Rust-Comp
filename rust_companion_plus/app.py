@@ -11,6 +11,7 @@ import customtkinter as ctk
 
 from rust_companion_plus.models import RustCredentials
 from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
+from rust_companion_plus.services.resource_heatmaps import grid_reference
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
 from rust_companion_plus.services.server_profiles import ServerProfileVault
 from rust_companion_plus.storage import JsonStore
@@ -133,6 +134,63 @@ def load_startup_state(
         last_live_update_at="",
     )
 
+
+
+def _world_grid(
+    x: float,
+    y: float,
+    world_size: int,
+) -> tuple[str, float, float]:
+    if world_size <= 0:
+        return "?", 0.5, 0.5
+
+    half = world_size / 2.0
+    if (
+        -half - 100 <= x <= half + 100
+        and -half - 100 <= y <= half + 100
+    ):
+        x_fraction = (x + half) / world_size
+        y_fraction = (y + half) / world_size
+    else:
+        x_fraction = x / world_size
+        y_fraction = y / world_size
+
+    x_fraction = min(1.0, max(0.0, x_fraction))
+    y_fraction = min(1.0, max(0.0, y_fraction))
+    return (
+        grid_reference(
+            x_fraction,
+            y_fraction,
+            world_size,
+        ),
+        x_fraction,
+        y_fraction,
+    )
+
+
+def _append_unique_store_row(
+    store: JsonStore,
+    key: str,
+    row: dict[str, Any],
+    *,
+    identity: str,
+    limit: int,
+) -> bool:
+    rows = [
+        dict(item)
+        for item in store.get(key, []) or []
+        if isinstance(item, dict)
+    ]
+    if any(
+        str(item.get("event_id") or "") == identity
+        for item in rows
+    ):
+        return False
+
+    row["event_id"] = identity
+    rows.append(row)
+    store.set(key, rows[-limit:])
+    return True
 
 @dataclass
 class AppContext:
@@ -369,6 +427,14 @@ class AppContext:
                 ),
             )
 
+        world_size = int(
+            new_server.get("size")
+            or new_server.get("map_size")
+            or old_server.get("size")
+            or old_server.get("map_size")
+            or 0
+        )
+
         old_members = {
             str(item.get("steam_id")): item
             for item in previous.team
@@ -379,13 +445,18 @@ class AppContext:
         }
         for steam_id, member in new_members.items():
             old = old_members.get(steam_id)
-            name = member.get("name") or steam_id
+            name = str(
+                member.get("name")
+                or (old or {}).get("name")
+                or steam_id
+            )
             if old is None:
                 self.record_event(
                     "TEAM",
                     f"{name} appeared in the live team feed.",
                 )
                 continue
+
             if bool(old.get("is_online")) != bool(
                 member.get("is_online")
             ):
@@ -398,14 +469,99 @@ class AppContext:
                     "TEAM",
                     f"{name} is now {state}.",
                 )
-            if bool(old.get("is_alive", True)) and not bool(
+
+            died = bool(old.get("is_alive", True)) and not bool(
                 member.get("is_alive", True)
-            ):
-                self.record_event(
-                    "TEAM",
-                    f"{name} is reported dead.",
-                    "warning",
+            )
+            if not died:
+                continue
+
+            x = float(
+                old.get("x")
+                if old.get("x") is not None
+                else member.get("x", 0)
+                or 0
+            )
+            y = float(
+                old.get("y")
+                if old.get("y") is not None
+                else member.get("y", 0)
+                or 0
+            )
+            grid, x_fraction, y_fraction = _world_grid(
+                x,
+                y,
+                world_size,
+            )
+            death_time = str(
+                member.get("death_time")
+                or datetime.now()
+                .astimezone()
+                .isoformat(timespec="seconds")
+            )
+            event_id = (
+                f"death:{steam_id}:{death_time}:"
+                f"{round(x)}:{round(y)}"
+            )
+            occurred_at = (
+                datetime.now()
+                .astimezone()
+                .isoformat(timespec="seconds")
+            )
+            threat_row = {
+                "occurred_at": occurred_at,
+                "event_type": "death",
+                "attacker": "Unknown",
+                "victim": name,
+                "weapon": "",
+                "grid": grid,
+                "note": (
+                    "Automatic Rust+ alive→dead transition; "
+                    f"last known x={x:.0f}, y={y:.0f}."
+                ),
+                "automatic": True,
+                "source": "rustplus_team_state",
+                "steam_id": steam_id,
+                "x": x,
+                "y": y,
+                "x_fraction": x_fraction,
+                "y_fraction": y_fraction,
+            }
+            _append_unique_store_row(
+                self.store,
+                "threats",
+                threat_row,
+                identity=event_id,
+                limit=500,
+            )
+
+            if str(self.credentials.steam_id) == steam_id:
+                _append_unique_store_row(
+                    self.store,
+                    "death_history",
+                    {
+                        "occurred_at": occurred_at,
+                        "name": name,
+                        "grid": grid,
+                        "x": x,
+                        "y": y,
+                        "x_fraction": x_fraction,
+                        "y_fraction": y_fraction,
+                        "source": "rustplus_team_state",
+                        "approximate": True,
+                    },
+                    identity=event_id,
+                    limit=10,
                 )
+
+            self.record_event(
+                "TEAM",
+                (
+                    f"{name} is reported dead near {grid}; "
+                    f"last Rust+ position x={x:.0f}, y={y:.0f}."
+                ),
+                "warning",
+            )
 
         event_names = {
             4: "CH47",
@@ -431,17 +587,55 @@ class AppContext:
                 str(marker.get("id", "")),
             )
             if (
-                marker_type in event_names
-                and identity not in old_events
+                marker_type not in event_names
+                or identity in old_events
             ):
-                self.record_event(
-                    "EVENT",
-                    (
-                        f"{event_names[marker_type]} appeared near "
-                        f"x={float(marker.get('x', 0) or 0):.0f}, "
-                        f"y={float(marker.get('y', 0) or 0):.0f}."
+                continue
+
+            x = float(marker.get("x", 0) or 0)
+            y = float(marker.get("y", 0) or 0)
+            grid, x_fraction, y_fraction = _world_grid(
+                x,
+                y,
+                world_size,
+            )
+            event_name = event_names[marker_type]
+            self.record_event(
+                "EVENT",
+                f"{event_name} appeared near {grid}.",
+            )
+            _append_unique_store_row(
+                self.store,
+                "threats",
+                {
+                    "occurred_at": (
+                        datetime.now()
+                        .astimezone()
+                        .isoformat(timespec="seconds")
                     ),
-                )
+                    "event_type": "world_event",
+                    "attacker": event_name,
+                    "victim": "",
+                    "weapon": "",
+                    "grid": grid,
+                    "note": (
+                        f"{event_name} appeared at "
+                        f"x={x:.0f}, y={y:.0f}."
+                    ),
+                    "automatic": True,
+                    "source": "rustplus_map_marker",
+                    "x": x,
+                    "y": y,
+                    "x_fraction": x_fraction,
+                    "y_fraction": y_fraction,
+                },
+                identity=(
+                    f"world:{marker_type}:"
+                    f"{marker.get('id', '')}"
+                ),
+                limit=500,
+            )
+
 
 
 
@@ -607,7 +801,7 @@ class RustCompanionApp(ctk.CTk):
                 self.content,
                 self.context,
             ),
-            "Tools": ToolsTab(
+            "Utilities": ToolsTab(
                 self.content,
                 self.context,
             ),

@@ -19,9 +19,8 @@ from PIL import Image
 
 from rust_companion_plus.config import APP_DATA_DIR
 from rust_companion_plus.models import RustCredentials
-from rust_companion_plus.services.resource_heatmaps import (
-    find_map_parser,
-    parse_local_map,
+from rust_companion_plus.services.builtin_map_analyzer import (
+    analyze_map_image,
 )
 
 
@@ -45,6 +44,8 @@ WORKSPACE_KEYS = (
     "resource_overlays",
     "loot_prices",
     "heatmap_selected_resources",
+    "threat_event_ids",
+    "death_history",
 )
 
 
@@ -369,72 +370,83 @@ def parse_current_server_map(
     detection: dict[str, Any],
     profile_record: dict[str, Any] | None,
     world_size: int,
+    map_image: Image.Image | None = None,
+    markers: Iterable[dict[str, Any]] | None = None,
     root: Path = PROFILE_ROOT,
 ) -> ParsedMapResult:
-    record = profile_record if isinstance(profile_record, dict) else {}
+    """Analyze the current Rust+ map without an external executable."""
+    record = profile_record if isinstance(
+        profile_record,
+        dict,
+    ) else {}
     existing = discover_saved_parsed_map(
         key,
         record,
         world_size,
         root=root,
     )
-    assets = record.get("assets") if isinstance(record.get("assets"), dict) else {}
-    saved_raw = str(assets.get("raw_map_path") or "").strip()
+    assets = (
+        record.get("assets")
+        if isinstance(record.get("assets"), dict)
+        else {}
+    )
+    saved_raw = str(
+        assets.get("raw_map_path") or ""
+    ).strip()
+    map_url = discover_current_map_url(
+        detection,
+        record,
+    )
     if existing is not None:
         return ParsedMapResult(
             source_dir=existing,
-            raw_map_path=Path(saved_raw) if saved_raw else None,
-            map_url=discover_current_map_url(detection, record),
+            raw_map_path=(
+                Path(saved_raw)
+                if saved_raw
+                else None
+            ),
+            map_url=map_url,
             created=False,
         )
 
-    parser = find_map_parser()
-    if parser is None or not parser.is_file():
-        raise FileNotFoundError(
-            "MapParser.exe was not found in the automatic RustPlusDesk, "
-            "app-data, or program locations."
+    if map_image is None:
+        raise ValueError(
+            "The current Rust+ map image is not loaded. "
+            "Use Load current map, then run Analyze current map."
         )
 
-    profile_dir = profile_asset_dir(key, root=root)
-    map_url = discover_current_map_url(detection, record)
-    raw_map = _find_existing_map_file(
-        map_url=map_url,
-        detection=detection,
-        profile_record=record,
-        profile_dir=profile_dir,
-        world_size=world_size,
+    output = default_parsed_map_dir(
+        key,
+        root=root,
     )
-
-    if raw_map is None:
-        if not map_url:
-            raise FileNotFoundError(
-                "The current server map URL was not found in the saved "
-                "profile or Rust log, and no matching local .map file exists."
-            )
-        raw_map = download_current_map(
-            map_url,
-            profile_dir / _map_filename_from_url(map_url),
-        )
-
-    output = default_parsed_map_dir(key, root=root)
-    if output.exists() and not is_parsed_map_directory(output):
+    if output.exists() and not is_parsed_map_directory(
+        output
+    ):
         shutil.rmtree(output, ignore_errors=True)
     output.mkdir(parents=True, exist_ok=True)
-    parsed = parse_local_map(
-        raw_map,
+
+    analysis = analyze_map_image(
+        map_image,
         output,
-        parser,
+        world_size=world_size,
+        markers=markers,
     )
-    if not is_parsed_map_directory(parsed):
+    if not analysis.manifest_path.is_file():
         raise RuntimeError(
-            "MapParser completed without producing recognized parsed map files."
+            "The built-in map analyzer did not produce its manifest."
         )
+
     return ParsedMapResult(
-        source_dir=Path(parsed),
-        raw_map_path=Path(raw_map),
+        source_dir=analysis.output_dir,
+        raw_map_path=(
+            Path(saved_raw)
+            if saved_raw
+            else None
+        ),
         map_url=map_url,
         created=True,
     )
+
 
 
 class ServerProfileVault:

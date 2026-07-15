@@ -15,29 +15,160 @@ from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 from rust_companion_plus.config import APP_DATA_DIR
 
 
+
 RESOURCE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "Stone": {
         "color": (180, 180, 180),
-        "aliases": ("stone ore", "stone_ore", "ore_stone", "stone-ore", "stone node"),
+        "aliases": (
+            "stone ore",
+            "stone_ore",
+            "ore_stone",
+            "stone-ore",
+            "stone node",
+        ),
+        "kind": "likelihood",
     },
     "Metal": {
         "color": (74, 144, 226),
-        "aliases": ("metal ore", "metal_ore", "ore_metal", "metal-ore", "metal node"),
+        "aliases": (
+            "metal ore",
+            "metal_ore",
+            "ore_metal",
+            "metal-ore",
+            "metal node",
+        ),
+        "kind": "likelihood",
     },
     "Sulfur": {
         "color": (250, 204, 21),
-        "aliases": ("sulfur ore", "sulfur_ore", "ore_sulfur", "sulfur-ore", "sulphur", "sulfur node"),
+        "aliases": (
+            "sulfur ore",
+            "sulfur_ore",
+            "ore_sulfur",
+            "sulfur-ore",
+            "sulphur",
+            "sulfur node",
+        ),
+        "kind": "likelihood",
     },
     "Junk Piles": {
         "color": (249, 115, 22),
-        "aliases": ("junkpile", "junk pile", "junk_pile", "roadside junk", "trash pile"),
+        "aliases": (
+            "junkpile",
+            "junk pile",
+            "junk_pile",
+            "roadside junk",
+            "trash pile",
+        ),
+        "kind": "likelihood",
     },
-    "Bear": {"color": (120, 72, 36), "aliases": ("bear.prefab", "/bear/", " bear ")},
-    "Boar": {"color": (168, 85, 247), "aliases": ("boar.prefab", "/boar/", " boar ")},
-    "Horse": {"color": (34, 197, 94), "aliases": ("horse.prefab", "/horse/", " horse ")},
-    "Wolf": {"color": (148, 163, 184), "aliases": ("wolf.prefab", "/wolf/", " wolf ")},
-    "Chicken": {"color": (244, 114, 182), "aliases": ("chicken.prefab", "/chicken/", " chicken ")},
+    "Bear": {
+        "color": (120, 72, 36),
+        "aliases": (
+            "bear.prefab",
+            "/bear/",
+            " bear ",
+        ),
+        "kind": "habitat",
+    },
+    "Boar": {
+        "color": (168, 85, 247),
+        "aliases": (
+            "boar.prefab",
+            "/boar/",
+            " boar ",
+        ),
+        "kind": "habitat",
+    },
+    "Horse": {
+        "color": (34, 197, 94),
+        "aliases": (
+            "horse.prefab",
+            "/horse/",
+            " horse ",
+        ),
+        "kind": "habitat",
+    },
+    "Wolf": {
+        "color": (148, 163, 184),
+        "aliases": (
+            "wolf.prefab",
+            "/wolf/",
+            " wolf ",
+        ),
+        "kind": "habitat",
+    },
+    "Chicken": {
+        "color": (244, 114, 182),
+        "aliases": (
+            "chicken.prefab",
+            "/chicken/",
+            " chicken ",
+        ),
+        "kind": "habitat",
+    },
+    "Water": {
+        "color": (14, 165, 233),
+        "aliases": (
+            "water mask",
+            "water layer",
+        ),
+        "kind": "static",
+    },
+    "Coastline": {
+        "color": (34, 211, 238),
+        "aliases": (
+            "coastline",
+            "coast line",
+            "shoreline",
+        ),
+        "kind": "static",
+    },
+    "Road Access": {
+        "color": (251, 146, 60),
+        "aliases": (
+            "road access",
+            "road mask",
+            "roads",
+        ),
+        "kind": "derived",
+    },
+    "Snow Biome": {
+        "color": (226, 232, 240),
+        "aliases": (
+            "snow biome",
+            "snow mask",
+        ),
+        "kind": "static",
+    },
+    "Desert Biome": {
+        "color": (245, 158, 11),
+        "aliases": (
+            "desert biome",
+            "desert mask",
+        ),
+        "kind": "static",
+    },
+    "Temperate Biome": {
+        "color": (34, 197, 94),
+        "aliases": (
+            "temperate biome",
+            "grass biome",
+            "forest biome",
+        ),
+        "kind": "static",
+    },
+    "Rough Terrain": {
+        "color": (239, 68, 68),
+        "aliases": (
+            "rough terrain",
+            "terrain roughness",
+            "cliff terrain",
+        ),
+        "kind": "derived",
+    },
 }
+
 
 
 @dataclass(slots=True)
