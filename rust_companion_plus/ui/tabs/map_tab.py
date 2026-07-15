@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 from pathlib import Path
@@ -6,9 +5,8 @@ from tkinter import messagebox
 from typing import Any
 
 import customtkinter as ctk
-from PIL import Image, ImageDraw
+from PIL import Image
 
-from rust_companion_plus.models import ResourceOverlay
 from rust_companion_plus.services.resource_heatmaps import (
     RESOURCE_DEFINITIONS,
     composite_heatmaps,
@@ -21,98 +19,152 @@ from rust_companion_plus.services.server_profiles import (
     parse_current_server_map,
 )
 from rust_companion_plus.ui.common import (
+    ACCENT,
     MUTED,
     run_in_worker,
-    safe_float,
-    safe_int,
 )
 
 
-MANUAL_COLORS = {
-    "Stone": "#a3a3a3",
-    "Metal": "#60a5fa",
-    "Sulfur": "#facc15",
-    "Wood": "#22c55e",
-    "Cloth": "#f9a8d4",
-}
+NO_HEATMAP = "No heatmap"
 
 
 class MapTab(ctk.CTkFrame):
     def __init__(self, master, context):
-        super().__init__(master, fg_color="transparent")
+        super().__init__(
+            master,
+            fg_color="transparent",
+        )
         self.context = context
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(1, weight=1)
+
         self.ctk_image = None
         self.current_source_path = ""
-        self.resource_checks: dict[str, ctk.CTkCheckBox] = {}
-        self.resource_count_labels: dict[str, ctk.CTkLabel] = {}
+        self.active_layer = ctk.StringVar(
+            value=NO_HEATMAP
+        )
 
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
+        header = ctk.CTkFrame(
+            self,
+            fg_color="transparent",
+        )
+        header.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            pady=(0, 12),
+        )
         header.grid_columnconfigure(0, weight=1)
 
-        title = ctk.CTkFrame(header, fg_color="transparent")
-        title.grid(row=0, column=0, sticky="w")
+        title = ctk.CTkFrame(
+            header,
+            fg_color="transparent",
+        )
+        title.grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
         ctk.CTkLabel(
             title,
-            text="Map Intelligence & Heatmaps",
-            font=ctk.CTkFont(size=28, weight="bold"),
+            text="Map Intelligence",
+            font=ctk.CTkFont(
+                size=28,
+                weight="bold",
+            ),
             anchor="w",
-        ).grid(row=0, column=0, sticky="w")
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+        )
         ctk.CTkLabel(
             title,
             text=(
-                "Current and saved map assets are matched to this "
-                "server profile automatically."
+                "Online loading fetches and analyzes the current Rust+ "
+                "map before it appears. Offline mode opens the last "
+                "saved analyzed map."
             ),
             text_color=MUTED,
             anchor="w",
-        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
-
-        self.fetch_button = ctk.CTkButton(
-            header,
-            text="Load current map",
-            command=self.load_current_map,
-            width=150,
+            justify="left",
+        ).grid(
+            row=1,
+            column=0,
+            sticky="w",
+            pady=(3, 0),
         )
-        self.fetch_button.grid(row=0, column=1, rowspan=2, padx=5)
+
+        self.online_button = ctk.CTkButton(
+            header,
+            text="Load & analyze current map",
+            command=self.load_current_map,
+            width=210,
+            height=38,
+            corner_radius=8,
+        )
+        self.online_button.grid(
+            row=0,
+            column=1,
+            rowspan=2,
+            padx=(8, 6),
+        )
 
         self.saved_button = ctk.CTkButton(
             header,
-            text="View saved parsed map",
+            text="View saved analyzed map",
             command=self.view_saved_parsed_map,
-            width=185,
+            width=205,
+            height=38,
+            corner_radius=8,
+            fg_color="transparent",
+            border_width=1,
         )
-        self.saved_button.grid(row=0, column=2, rowspan=2, padx=5)
-
-        self.parse_button = ctk.CTkButton(
-            header,
-            text="Analyze current map",
-            command=self.parse_current_map,
-            width=160,
+        self.saved_button.grid(
+            row=0,
+            column=2,
+            rowspan=2,
+            padx=(6, 0),
         )
-        self.parse_button.grid(row=0, column=3, rowspan=2, padx=(5, 0))
 
-        body = ctk.CTkFrame(self)
-        body.grid(row=1, column=0, sticky="nsew")
+        body = ctk.CTkFrame(
+            self,
+            corner_radius=12,
+        )
+        body.grid(
+            row=1,
+            column=0,
+            sticky="nsew",
+        )
         body.grid_columnconfigure(0, weight=5)
         body.grid_columnconfigure(1, weight=2)
         body.grid_rowconfigure(0, weight=1)
 
-        map_frame = ctk.CTkFrame(body, fg_color="#111827")
-        map_frame.grid(row=0, column=0, sticky="nsew", padx=10, pady=10)
+        map_frame = ctk.CTkFrame(
+            body,
+            fg_color="#0f172a",
+            corner_radius=10,
+        )
+        map_frame.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=12,
+            pady=12,
+        )
         map_frame.grid_rowconfigure(0, weight=1)
         map_frame.grid_columnconfigure(0, weight=1)
 
         self.map_label = ctk.CTkLabel(
             map_frame,
             text=(
-                "Load the current Rust+ map, open this profile's saved "
-                "parsed map, or parse the detected current map."
+                "ONLINE\nLoad & analyze the current map.\n\n"
+                "OFFLINE\nOpen the saved analyzed map for this server."
             ),
             anchor="center",
             justify="center",
+            text_color=("#94a3b8", "#94a3b8"),
+            font=ctk.CTkFont(size=16),
         )
         self.map_label.grid(
             row=0,
@@ -121,9 +173,12 @@ class MapTab(ctk.CTkFrame):
             padx=10,
             pady=10,
         )
+
         self.map_status = ctk.CTkLabel(
             map_frame,
-            text="No profile map asset loaded.",
+            text=(
+                "No heatmap is selected by default."
+            ),
             anchor="w",
             text_color=MUTED,
         )
@@ -131,324 +186,274 @@ class MapTab(ctk.CTkFrame):
             row=1,
             column=0,
             sticky="ew",
-            padx=12,
-            pady=(0, 10),
+            padx=14,
+            pady=(0, 12),
         )
 
-        side_tabs = ctk.CTkTabview(body, width=360)
-        side_tabs.grid(
+        side = ctk.CTkFrame(
+            body,
+            corner_radius=10,
+        )
+        side.grid(
             row=0,
             column=1,
             sticky="nsew",
-            padx=(0, 10),
-            pady=10,
+            padx=(0, 12),
+            pady=12,
         )
-        side_tabs.add("Heatmaps")
-        side_tabs.add("Manual notes")
-        self._build_heatmap_controls(side_tabs.tab("Heatmaps"))
-        self._build_manual_controls(side_tabs.tab("Manual notes"))
-
-        assets = self._profile_assets()
-        source = str(assets.get("parsed_map_dir") or "").strip()
-        if source and Path(source).exists():
-            self.after(
-                150,
-                lambda: self.load_heatmap_source(
-                    Path(source),
-                    quiet=True,
-                ),
-            )
-        if self.context.map_image is not None:
-            self.after(175, self.render_map)
-
-    def _build_heatmap_controls(self, parent) -> None:
-        parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(10, weight=1)
+        side.grid_columnconfigure(0, weight=1)
+        side.grid_rowconfigure(10, weight=1)
 
         ctk.CTkLabel(
-            parent,
-            text=(
-                "Exact layers are loaded from this server profile's "
-                "automatically detected parsed map."
+            side,
+            text="Heatmap layer",
+            font=ctk.CTkFont(
+                size=18,
+                weight="bold",
             ),
-            justify="left",
-            wraplength=310,
             anchor="w",
-            text_color=MUTED,
         ).grid(
             row=0,
             column=0,
             sticky="ew",
-            padx=8,
-            pady=(8, 6),
+            padx=14,
+            pady=(14, 4),
         )
-
-        size_row = ctk.CTkFrame(parent, fg_color="transparent")
-        size_row.grid(
+        ctk.CTkLabel(
+            side,
+            text=(
+                "The base map stays clean until you choose a layer."
+            ),
+            text_color=MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=310,
+        ).grid(
             row=1,
             column=0,
             sticky="ew",
-            padx=6,
-            pady=4,
+            padx=14,
+            pady=(0, 10),
         )
-        size_row.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(
-            size_row,
-            text="World size",
-            text_color=MUTED,
-        ).grid(row=0, column=0, padx=(0, 8))
-        self.world_size_label = ctk.CTkLabel(
-            size_row,
-            text="Automatic",
+
+        self.layer_menu = ctk.CTkOptionMenu(
+            side,
+            values=(
+                [NO_HEATMAP]
+                + self._ordered_layers()
+            ),
+            variable=self.active_layer,
+            command=self._layer_changed,
+            height=36,
+        )
+        self.layer_menu.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=(0, 8),
+        )
+
+        self.layer_kind = ctk.CTkLabel(
+            side,
+            text="Base map only",
+            text_color=("#0369a1", "#7dd3fc"),
             anchor="w",
-            font=ctk.CTkFont(weight="bold"),
+            font=ctk.CTkFont(
+                size=11,
+                weight="bold",
+            ),
         )
-        self.world_size_label.grid(
+        self.layer_kind.grid(
+            row=3,
+            column=0,
+            sticky="ew",
+            padx=14,
+        )
+
+        self.layer_accuracy = ctk.CTkLabel(
+            side,
+            text=(
+                "Choose a layer after the map analysis completes."
+            ),
+            text_color=MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=310,
+        )
+        self.layer_accuracy.grid(
+            row=4,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=(3, 10),
+        )
+
+        controls = ctk.CTkFrame(
+            side,
+            fg_color="transparent",
+        )
+        controls.grid(
+            row=5,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=2,
+        )
+        controls.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            controls,
+            text="Opacity",
+            text_color=MUTED,
+        ).grid(
+            row=0,
+            column=0,
+            sticky="w",
+            padx=(0, 8),
+        )
+        self.opacity_slider = ctk.CTkSlider(
+            controls,
+            from_=0.15,
+            to=0.95,
+            number_of_steps=16,
+            command=lambda _value: self.render_map(),
+        )
+        self.opacity_slider.set(0.66)
+        self.opacity_slider.grid(
             row=0,
             column=1,
             sticky="ew",
         )
 
-        selected = set(
-            self.context.store.get(
-                "heatmap_selected_resources",
-                ["Stone", "Metal", "Sulfur"],
-            )
-        )
-        profile_selected = self._profile_assets().get(
-            "selected_resources"
-        )
-        if isinstance(profile_selected, list):
-            selected = set(str(item) for item in profile_selected)
-
-        resource_frame = ctk.CTkScrollableFrame(
-            parent,
-            height=260,
-            label_text="Visible layers",
-        )
-        resource_frame.grid(
-            row=2,
-            column=0,
-            sticky="ew",
-            padx=6,
-            pady=6,
-        )
-        resource_frame.grid_columnconfigure(0, weight=1)
-
-        for row, resource in enumerate(RESOURCE_DEFINITIONS):
-            line = ctk.CTkFrame(
-                resource_frame,
-                fg_color="transparent",
-            )
-            line.grid(row=row, column=0, sticky="ew", pady=2)
-            line.grid_columnconfigure(0, weight=1)
-            check = ctk.CTkCheckBox(
-                line,
-                text=resource,
-                command=self.render_map,
-            )
-            check.grid(row=0, column=0, sticky="w")
-            if resource in selected:
-                check.select()
-            count = ctk.CTkLabel(
-                line,
-                text="—",
-                text_color=MUTED,
-                width=60,
-                anchor="e",
-            )
-            count.grid(row=0, column=1, sticky="e")
-            self.resource_checks[resource] = check
-            self.resource_count_labels[resource] = count
-
         ctk.CTkLabel(
-            parent,
-            text="Layer opacity",
-        ).grid(row=3, column=0, sticky="w", padx=10)
-        self.opacity_slider = ctk.CTkSlider(
-            parent,
-            from_=0.1,
-            to=1.0,
-            number_of_steps=18,
-            command=lambda _value: self.render_map(),
-        )
-        self.opacity_slider.set(0.68)
-        self.opacity_slider.grid(
-            row=4,
+            controls,
+            text="Smoothing",
+            text_color=MUTED,
+        ).grid(
+            row=1,
             column=0,
-            sticky="ew",
-            padx=10,
-            pady=(0, 8),
+            sticky="w",
+            padx=(0, 8),
+            pady=(10, 0),
         )
-
-        ctk.CTkLabel(
-            parent,
-            text="Density smoothing",
-        ).grid(row=5, column=0, sticky="w", padx=10)
         self.blur_slider = ctk.CTkSlider(
-            parent,
+            controls,
             from_=0,
-            to=60,
-            number_of_steps=30,
+            to=50,
+            number_of_steps=25,
             command=lambda _value: self.render_map(),
         )
-        self.blur_slider.set(24)
+        self.blur_slider.set(20)
         self.blur_slider.grid(
+            row=1,
+            column=1,
+            sticky="ew",
+            pady=(10, 0),
+        )
+
+        actions = ctk.CTkFrame(
+            side,
+            fg_color="transparent",
+        )
+        actions.grid(
             row=6,
             column=0,
             sticky="ew",
-            padx=10,
-            pady=(0, 8),
+            padx=14,
+            pady=(12, 6),
+        )
+        actions.grid_columnconfigure((0, 1), weight=1)
+        ctk.CTkButton(
+            actions,
+            text="Rank selected hot zones",
+            command=self.refresh_hotspots,
+            height=34,
+        ).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 4),
+        )
+        ctk.CTkButton(
+            actions,
+            text="Clear layer",
+            command=self.clear_layer,
+            height=34,
+            fg_color="transparent",
+            border_width=1,
+        ).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(4, 0),
         )
 
         ctk.CTkLabel(
-            parent,
-            text="Point influence radius",
-        ).grid(row=7, column=0, sticky="w", padx=10)
-        self.radius_slider = ctk.CTkSlider(
-            parent,
-            from_=3,
-            to=50,
-            number_of_steps=47,
-            command=lambda _value: self.render_map(),
-        )
-        self.radius_slider.set(18)
-        self.radius_slider.grid(
-            row=8,
+            side,
+            text="Top zones",
+            font=ctk.CTkFont(
+                size=14,
+                weight="bold",
+            ),
+            anchor="w",
+        ).grid(
+            row=7,
             column=0,
             sticky="ew",
-            padx=10,
-            pady=(0, 8),
+            padx=14,
+            pady=(8, 3),
         )
 
-        ctk.CTkButton(
-            parent,
-            text="Find best hotspots",
-            command=self.refresh_hotspots,
-        ).grid(
-            row=9,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=6,
-        )
         self.hotspot_box = ctk.CTkTextbox(
-            parent,
-            height=210,
+            side,
+            height=260,
+            corner_radius=8,
         )
         self.hotspot_box.grid(
             row=10,
             column=0,
             sticky="nsew",
-            padx=8,
-            pady=(4, 8),
+            padx=14,
+            pady=(0, 14),
         )
-        self.hotspot_box.insert(
-            "1.0",
-            "Load or analyze this server's map, select layers, then rank terrain/habitat hotspots.",
+        self._set_hotspot_text(
+            "Load a map, then choose one layer."
         )
 
-    def _build_manual_controls(self, parent) -> None:
-        parent.grid_columnconfigure(0, weight=1)
-        parent.grid_rowconfigure(8, weight=1)
-
-        self.resource = ctk.CTkOptionMenu(
-            parent,
-            values=list(MANUAL_COLORS),
+    @staticmethod
+    def _ordered_layers() -> list[str]:
+        order = {
+            "likelihood": 0,
+            "habitat": 1,
+            "static": 2,
+        }
+        return sorted(
+            RESOURCE_DEFINITIONS,
+            key=lambda name: (
+                order.get(
+                    str(
+                        RESOURCE_DEFINITIONS[name].get(
+                            "kind",
+                            "static",
+                        )
+                    ),
+                    9,
+                ),
+                name.casefold(),
+            ),
         )
-        self.resource.grid(
-            row=0,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=4,
-        )
-        self.x_entry = ctk.CTkEntry(
-            parent,
-            placeholder_text="X % (0–100)",
-        )
-        self.x_entry.grid(
-            row=1,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=4,
-        )
-        self.y_entry = ctk.CTkEntry(
-            parent,
-            placeholder_text="Y % (0–100)",
-        )
-        self.y_entry.grid(
-            row=2,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=4,
-        )
-        self.intensity = ctk.CTkEntry(
-            parent,
-            placeholder_text="Intensity 1–5",
-        )
-        self.intensity.insert(0, "2")
-        self.intensity.grid(
-            row=3,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=4,
-        )
-        self.note = ctk.CTkEntry(
-            parent,
-            placeholder_text="Note",
-        )
-        self.note.grid(
-            row=4,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=4,
-        )
-        ctk.CTkButton(
-            parent,
-            text="Add manual zone",
-            command=self.add_overlay,
-        ).grid(
-            row=5,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=6,
-        )
-        ctk.CTkButton(
-            parent,
-            text="Clear manual zones",
-            command=self.clear_overlays,
-        ).grid(
-            row=6,
-            column=0,
-            sticky="ew",
-            padx=8,
-            pady=6,
-        )
-        self.overlay_list = ctk.CTkTextbox(
-            parent,
-            height=330,
-        )
-        self.overlay_list.grid(
-            row=8,
-            column=0,
-            sticky="nsew",
-            padx=8,
-            pady=8,
-        )
-        self.refresh_overlay_list()
 
     def _profile_assets(self) -> dict[str, Any]:
         record = self.context.profile_record
         if not isinstance(record, dict):
             return {}
         assets = record.get("assets")
-        return dict(assets) if isinstance(assets, dict) else {}
+        return (
+            dict(assets)
+            if isinstance(assets, dict)
+            else {}
+        )
 
     def _set_profile_asset(
         self,
@@ -457,12 +462,18 @@ class MapTab(ctk.CTkFrame):
     ) -> None:
         record = dict(
             self.context.profile_record
-            if isinstance(self.context.profile_record, dict)
+            if isinstance(
+                self.context.profile_record,
+                dict,
+            )
             else {}
         )
         assets = dict(
             record.get("assets")
-            if isinstance(record.get("assets"), dict)
+            if isinstance(
+                record.get("assets"),
+                dict,
+            )
             else {}
         )
         if value not in (None, ""):
@@ -472,195 +483,89 @@ class MapTab(ctk.CTkFrame):
 
     def current_world_size(self) -> int:
         snapshot = self.context.snapshot
-        if snapshot:
+        if snapshot is not None:
             server = snapshot.server
-            size = safe_int(
-                str(
+            try:
+                size = int(
                     server.get("size")
                     or server.get("map_size")
                     or 0
                 )
-            )
+            except (TypeError, ValueError):
+                size = 0
             if size > 0:
-                self.world_size_label.configure(text=str(size))
                 return size
 
-        size = safe_int(
-            str(self._profile_assets().get("world_size") or 0)
-        )
-        if size <= 0:
-            size = safe_int(
-                str(
-                    self.context.store.get(
-                        "heatmap_world_size",
-                        0,
+        try:
+            return max(
+                0,
+                int(
+                    self._profile_assets().get(
+                        "world_size"
                     )
-                )
+                    or 0
+                ),
             )
-        self.world_size_label.configure(
-            text=str(size) if size > 0 else "Unknown"
-        )
-        return max(0, size)
+        except (TypeError, ValueError):
+            return 0
 
     def selected_resources(self) -> list[str]:
-        return [
-            resource
-            for resource, check in self.resource_checks.items()
-            if check.get()
-        ]
+        layer = self.active_layer.get()
+        if layer in RESOURCE_DEFINITIONS:
+            return [layer]
+        return []
+
+    def _set_busy(
+        self,
+        busy: bool,
+        message: str = "",
+    ) -> None:
+        state = "disabled" if busy else "normal"
+        self.online_button.configure(state=state)
+        self.saved_button.configure(state=state)
+        if message:
+            self.map_status.configure(text=message)
 
     def load_current_map(self) -> None:
         if not self.context.credentials.is_complete():
             messagebox.showerror(
                 "Rust+ profile incomplete",
-                "This server profile does not have complete Rust+ credentials.",
+                (
+                    "The current server needs a complete Rust+ "
+                    "profile before its live map can be loaded."
+                ),
             )
             return
 
-        self.fetch_button.configure(
-            state="disabled",
-            text="Loading current map…",
-        )
-
-        def success(image) -> None:
-            self.fetch_button.configure(
-                state="normal",
-                text="Load current map",
-            )
-            self.context.map_image = image
-            key = str(self.context.active_profile_key or "").strip()
-            vault = self.context.profile_vault
-            if key and vault is not None:
-                try:
-                    saved = vault.save_map_image(key, image)
-                except Exception as exc:
-                    self.map_status.configure(
-                        text=f"Current map loaded; local map cache failed: {exc}"
-                    )
-                else:
-                    if saved:
-                        self._set_profile_asset(
-                            "map_image_path",
-                            saved,
-                        )
-            self.map_status.configure(
-                text=(
-                    "Current Rust+ map loaded for this profile. "
-                    "Save the profile on close to keep the complete archive."
-                )
-            )
-            self.render_map()
-
-        def error(exc: Exception) -> None:
-            self.fetch_button.configure(
-                state="normal",
-                text="Load current map",
-            )
-            messagebox.showerror(
-                "Map request failed",
-                str(exc),
-            )
-
-        run_in_worker(
-            self,
-            lambda: self.context.rust.fetch_map(
-                self.context.credentials
-            ),
-            success,
-            error,
-        )
-
-    def view_saved_parsed_map(self) -> None:
-        key = str(self.context.active_profile_key or "").strip()
-        if not key:
-            messagebox.showerror(
-                "No server profile",
-                "The current server profile could not be identified.",
-            )
-            return
-
-        self.saved_button.configure(
-            state="disabled",
-            text="Finding saved map…",
-        )
-        world_size = self.current_world_size()
-
-        def work() -> Path | None:
-            return discover_saved_parsed_map(
-                key,
-                self.context.profile_record,
-                world_size,
-            )
-
-        def success(source: Path | None) -> None:
-            self.saved_button.configure(
-                state="normal",
-                text="View saved parsed map",
-            )
-            if source is None:
-                messagebox.showinfo(
-                    "No saved parsed map",
-                    "No parsed map is associated with this server profile yet. "
-                    "Use Analyze current map; the app will locate the map and parser automatically.",
-                )
-                return
-            self._set_profile_asset(
-                "parsed_map_dir",
-                str(source),
-            )
-            self.load_heatmap_source(source)
-
-        def error(exc: Exception) -> None:
-            self.saved_button.configure(
-                state="normal",
-                text="View saved parsed map",
-            )
-            messagebox.showerror(
-                "Saved map lookup failed",
-                str(exc),
-            )
-
-        run_in_worker(self, work, success, error)
-
-    def parse_current_map(self) -> None:
         key = str(
             self.context.active_profile_key or ""
         ).strip()
         if not key:
             messagebox.showerror(
-                "No server profile",
-                "The current server profile could not be identified.",
+                "No active server profile",
+                (
+                    "The current server endpoint could not be "
+                    "identified."
+                ),
             )
             return
 
-        self.parse_button.configure(
-            state="disabled",
-            text="Analyzing current map…",
-        )
-        self.map_status.configure(
-            text=(
-                "Running the built-in terrain, biome, ore-likelihood, "
-                "animal-habitat, road, and coastline analyzer…"
-            )
+        self._set_busy(
+            True,
+            (
+                "Fetching the current Rust+ map and running the "
+                "built-in analysis before display…"
+            ),
         )
         world_size = self.current_world_size()
 
         def work():
-            image = self.context.map_image
-            if image is None:
-                if not self.context.credentials.is_complete():
-                    raise ValueError(
-                        "The current server has no complete Rust+ profile "
-                        "and no saved map image."
-                    )
-                image = self.context.rust.fetch_map(
-                    self.context.credentials
-                )
-
-            snapshot = self.context.snapshot
+            image = self.context.rust.fetch_map(
+                self.context.credentials
+            )
             markers = (
-                list(snapshot.markers)
-                if snapshot is not None
+                self.context.snapshot.markers
+                if self.context.snapshot is not None
                 else []
             )
             result = parse_current_server_map(
@@ -670,39 +575,43 @@ class MapTab(ctk.CTkFrame):
                 world_size=world_size,
                 map_image=image,
                 markers=markers,
+                force_refresh=True,
             )
-            return result, image
+            bundle = load_heatmap_bundle(
+                result.source_dir,
+                world_size,
+            )
+            return image, result, bundle
 
         def success(payload) -> None:
-            result, image = payload
-            self.parse_button.configure(
-                state="normal",
-                text="Analyze current map",
-            )
+            image, result, bundle = payload
             self.context.map_image = image
+            self.context.heatmap_bundle = bundle
+            self.current_source_path = str(
+                result.source_dir
+            )
             self._set_profile_asset(
                 "parsed_map_dir",
                 str(result.source_dir),
             )
-            if result.raw_map_path is not None:
-                self._set_profile_asset(
-                    "raw_map_path",
-                    str(result.raw_map_path),
-                )
+            self._set_profile_asset(
+                "world_size",
+                (
+                    world_size
+                    or bundle.detected_world_size
+                ),
+            )
             if result.map_url:
                 self._set_profile_asset(
                     "map_url",
                     result.map_url,
                 )
 
-            key_value = str(
-                self.context.active_profile_key or ""
-            ).strip()
             vault = self.context.profile_vault
-            if key_value and vault is not None:
+            if vault is not None:
                 try:
                     saved = vault.save_map_image(
-                        key_value,
+                        key,
                         image,
                     )
                 except Exception:
@@ -713,37 +622,28 @@ class MapTab(ctk.CTkFrame):
                         saved,
                     )
 
-            self.load_heatmap_source(
-                result.source_dir,
-                quiet=not result.created,
+            self.context.store.set(
+                "heatmap_source_dir",
+                str(result.source_dir),
             )
-            if result.created:
-                self.map_status.configure(
-                    text=(
-                        "Built-in map analysis complete. Static terrain "
-                        "layers are map-derived; ore and animal layers are "
-                        "clearly labeled suitability estimates because live "
-                        "spawns are dynamic."
-                    )
-                )
-            else:
-                self.map_status.configure(
-                    text=(
-                        "This server's built-in map analysis was already "
-                        "saved and has been loaded."
-                    )
-                )
+            self.clear_layer()
+            self.render_map()
+            self._set_busy(
+                False,
+                (
+                    "Current map loaded and analyzed. "
+                    "Choose a heatmap layer on the right."
+                ),
+            )
+            self.context.notify_data_changed()
 
         def error(exc: Exception) -> None:
-            self.parse_button.configure(
-                state="normal",
-                text="Analyze current map",
-            )
-            self.map_status.configure(
-                text="Built-in current map analysis failed."
+            self._set_busy(
+                False,
+                "Current map loading or analysis failed.",
             )
             messagebox.showerror(
-                "Current map analysis failed",
+                "Current map failed",
                 str(exc),
             )
 
@@ -754,267 +654,223 @@ class MapTab(ctk.CTkFrame):
             error,
         )
 
+    def view_saved_parsed_map(self) -> None:
+        key = str(
+            self.context.active_profile_key or ""
+        ).strip()
+        if not key:
+            messagebox.showerror(
+                "No server profile",
+                (
+                    "The saved server profile could not be "
+                    "identified."
+                ),
+            )
+            return
 
-    def load_heatmap_source(
-        self,
-        source: Path,
-        quiet: bool = False,
-    ) -> None:
-        source = Path(source)
-        self.map_status.configure(
-            text=f"Loading saved parsed map: {source}"
+        self._set_busy(
+            True,
+            "Opening the saved analyzed map…",
         )
         world_size = self.current_world_size()
 
-        def success(bundle) -> None:
-            self.context.heatmap_bundle = bundle
+        def work():
+            source = discover_saved_parsed_map(
+                key,
+                self.context.profile_record,
+                world_size,
+            )
+            if source is None:
+                return None
+
+            bundle = load_heatmap_bundle(
+                source,
+                world_size,
+            )
+            base_path = (
+                Path(source)
+                / "current_map_texture.png"
+            )
+            image = None
+            if base_path.is_file():
+                with Image.open(base_path) as loaded:
+                    image = loaded.convert(
+                        "RGBA"
+                    ).copy()
+            elif self.context.map_image is not None:
+                image = self.context.map_image.copy()
+            return source, bundle, image
+
+        def success(payload) -> None:
+            if payload is None:
+                self._set_busy(
+                    False,
+                    "No saved analyzed map is available.",
+                )
+                messagebox.showinfo(
+                    "No saved analyzed map",
+                    (
+                        "Load and analyze the current map while "
+                        "online, then save this server profile."
+                    ),
+                )
+                return
+
+            source, bundle, image = payload
+            if image is None:
+                self._set_busy(
+                    False,
+                    "The saved analysis has no base map image.",
+                )
+                messagebox.showerror(
+                    "Saved map incomplete",
+                    (
+                        "The saved analysis exists, but its base "
+                        "map image is missing."
+                    ),
+                )
+                return
+
             self.current_source_path = str(source)
+            self.context.heatmap_bundle = bundle
+            self.context.map_image = image
             self._set_profile_asset(
                 "parsed_map_dir",
                 str(source),
             )
-            if bundle.detected_world_size:
-                self._set_profile_asset(
-                    "world_size",
-                    bundle.detected_world_size,
-                )
-            self.context.store.set(
-                "heatmap_source_dir",
-                str(source),
-            )
-            self.context.store.set(
-                "heatmap_world_size",
+            self.clear_layer()
+            self.render_map()
+            self._set_busy(
+                False,
                 (
-                    self.current_world_size()
-                    or bundle.detected_world_size
+                    "Saved analyzed map opened. "
+                    "Choose a heatmap layer on the right."
                 ),
             )
-            self._try_load_base_map(source)
-            self.refresh_resource_counts()
-            self.render_map()
-            self.refresh_hotspots()
-            warnings = " · ".join(bundle.warnings[:2])
-            details = (
-                f"{len(bundle.resources)} resource types · "
-                f"{bundle.files_scanned} source files"
+            self.context.notify_data_changed()
+
+        def error(exc: Exception) -> None:
+            self._set_busy(
+                False,
+                "Saved map loading failed.",
             )
-            self.map_status.configure(
-                text=(
-                    f"Loaded saved parsed map · {details}"
-                    + (f" · {warnings}" if warnings else "")
-                )
+            messagebox.showerror(
+                "Saved map failed",
+                str(exc),
             )
-            if (
-                bundle.warnings
-                and not quiet
-                and not bundle.resources
-            ):
-                messagebox.showwarning(
-                    "No recognized heatmap layers",
-                    "\n".join(bundle.warnings),
-                )
 
         run_in_worker(
             self,
-            lambda: load_heatmap_bundle(
-                source,
-                world_size,
-            ),
+            work,
             success,
-            lambda exc: messagebox.showerror(
-                "Saved parsed map failed",
-                str(exc),
-            ),
+            error,
         )
 
-    def reload_current_source(self) -> None:
-        source = self.current_source_path
-        if source and Path(source).exists():
-            self.load_heatmap_source(
-                Path(source),
-                quiet=True,
+    def clear_layer(self) -> None:
+        self.active_layer.set(NO_HEATMAP)
+        self.layer_kind.configure(
+            text="Base map only"
+        )
+        self.layer_accuracy.configure(
+            text=(
+                "No heatmap overlay is active."
+            )
+        )
+        self._set_hotspot_text(
+            "Choose one layer to rank its top zones."
+        )
+        self.render_map()
+
+    def _layer_changed(
+        self,
+        layer: str,
+    ) -> None:
+        if layer not in RESOURCE_DEFINITIONS:
+            self.clear_layer()
+            return
+
+        kind = str(
+            RESOURCE_DEFINITIONS[layer].get(
+                "kind",
+                "static",
+            )
+        )
+        labels = {
+            "likelihood": "Predictive likelihood",
+            "habitat": "Predictive habitat",
+            "static": "Map-derived layer",
+        }
+        self.layer_kind.configure(
+            text=labels.get(kind, "Map layer")
+        )
+
+        if kind == "likelihood":
+            detail = (
+                "Estimated from visible biome, terrain, and road "
+                "evidence. This is not an exact live node map."
+            )
+        elif kind == "habitat":
+            detail = (
+                "Estimated habitat suitability. Animals are dynamic "
+                "and exact live positions are not exposed here."
+            )
+        elif layer == "Monument Proximity":
+            detail = (
+                "Approximate visible monument-marker centers after "
+                "known live map markers are excluded."
             )
         else:
-            self.render_map()
-
-    def _try_load_base_map(self, source: Path) -> None:
-        if self.context.map_image is not None:
-            return
-        root = source if source.is_dir() else source.parent
-        candidates = [
-            root / "map_texture.png",
-            root / "current_map_texture.png",
-            root / "map.png",
-        ]
-        for candidate in candidates:
-            if not candidate.is_file():
-                continue
-            try:
-                with Image.open(candidate) as image:
-                    self.context.map_image = (
-                        image.convert("RGBA").copy()
-                    )
-                return
-            except OSError:
-                continue
-
-    def refresh_resource_counts(self) -> None:
-        bundle = self.context.heatmap_bundle
-        for resource, label in self.resource_count_labels.items():
-            if bundle is None:
-                label.configure(text="—")
-                continue
-            points = len(bundle.points.get(resource, []))
-            masks = len(bundle.raster_layers.get(resource, []))
-            if points and masks:
-                text = f"{points} + {masks}m"
-            elif points:
-                text = str(points)
-            elif masks:
-                text = f"{masks} mask"
-            else:
-                text = "0"
-            label.configure(text=text)
-
-    def overlays(self) -> list[dict]:
-        return list(
-            self.context.store.get(
-                "resource_overlays",
-                [],
+            detail = (
+                "Derived directly from visible pixels in the "
+                "analyzed Rust+ map."
             )
-        )
-
-    def add_overlay(self) -> None:
-        raw_x = safe_float(self.x_entry.get(), -1)
-        raw_y = safe_float(self.y_entry.get(), -1)
-        if not 0 <= raw_x <= 100 or not 0 <= raw_y <= 100:
-            messagebox.showerror(
-                "Invalid coordinates",
-                "Enter X and Y percentages from 0 to 100.",
-            )
-            return
-        overlay = ResourceOverlay(
-            self.resource.get(),
-            raw_x / 100.0,
-            raw_y / 100.0,
-            max(
-                1,
-                min(
-                    5,
-                    safe_int(self.intensity.get(), 2),
-                ),
-            ),
-            self.note.get().strip(),
-        )
-        rows = self.overlays()
-        rows.append(overlay.to_dict())
-        self.context.store.set(
-            "resource_overlays",
-            rows,
-        )
-        self.refresh_overlay_list()
+        self.layer_accuracy.configure(text=detail)
         self.render_map()
-
-    def clear_overlays(self) -> None:
-        self.context.store.set("resource_overlays", [])
-        self.refresh_overlay_list()
-        self.render_map()
-
-    def refresh_overlay_list(self) -> None:
-        lines = []
-        for row in self.overlays():
-            lines.append(
-                f"{row['resource']} · "
-                f"{row['x_fraction'] * 100:.0f}%, "
-                f"{row['y_fraction'] * 100:.0f}% · "
-                f"intensity {row.get('intensity', 1)}  "
-                f"{row.get('note', '')}"
-            )
-        self.overlay_list.delete("1.0", "end")
-        self.overlay_list.insert(
-            "1.0",
-            "\n".join(lines)
-            if lines
-            else "No manual resource notes yet.",
-        )
+        self.refresh_hotspots()
 
     def render_map(self) -> None:
-        selected = self.selected_resources()
-        self.context.store.set(
-            "heatmap_selected_resources",
-            selected,
-        )
-        self._set_profile_asset(
-            "selected_resources",
-            selected,
-        )
-        self._set_profile_asset(
-            "world_size",
-            self.current_world_size(),
-        )
-        self.context.store.set(
-            "heatmap_world_size",
-            self.current_world_size(),
-        )
-        if self.context.map_image is None:
+        image = self.context.map_image
+        if image is None:
             return
 
-        image = composite_heatmaps(
-            self.context.map_image.copy(),
+        layer = self.active_layer.get()
+        selected = (
+            [layer]
+            if layer in RESOURCE_DEFINITIONS
+            else []
+        )
+        rendered = composite_heatmaps(
+            image,
             self.context.heatmap_bundle,
             selected,
-            opacity=float(self.opacity_slider.get()),
-            point_radius=int(self.radius_slider.get()),
-            blur_radius=int(self.blur_slider.get()),
-        ).convert("RGBA")
-
-        draw = ImageDraw.Draw(image, "RGBA")
-        for row in self.overlays():
-            x = int(
-                image.width * float(row["x_fraction"])
-            )
-            y = int(
-                image.height
-                * (1.0 - float(row["y_fraction"]))
-            )
-            radius = (
-                18
-                + int(row.get("intensity", 1)) * 12
-            )
-            color = MANUAL_COLORS.get(
-                row["resource"],
-                "#ffffff",
-            ).lstrip("#")
-            rgb = tuple(
-                int(color[index : index + 2], 16)
-                for index in (0, 2, 4)
-            )
-            draw.ellipse(
-                (
-                    x - radius,
-                    y - radius,
-                    x + radius,
-                    y + radius,
-                ),
-                fill=(*rgb, 50),
-                outline=(*rgb, 240),
-                width=4,
-            )
-
-        max_width, max_height = 1030, 720
-        scale = min(
-            max_width / image.width,
-            max_height / image.height,
-            1.0,
+            opacity=float(
+                self.opacity_slider.get()
+            ),
+            point_radius=18,
+            blur_radius=int(
+                self.blur_slider.get()
+            ),
         )
-        display_size = (
-            max(1, int(image.width * scale)),
-            max(1, int(image.height * scale)),
+
+        available_width = max(
+            760,
+            self.map_label.winfo_width() - 20,
+        )
+        available_height = max(
+            620,
+            self.map_label.winfo_height() - 20,
+        )
+        rendered.thumbnail(
+            (
+                available_width,
+                available_height,
+            ),
+            Image.Resampling.LANCZOS,
         )
         self.ctk_image = ctk.CTkImage(
-            light_image=image,
-            dark_image=image,
-            size=display_size,
+            light_image=rendered,
+            dark_image=rendered,
+            size=rendered.size,
         )
         self.map_label.configure(
             image=self.ctk_image,
@@ -1022,12 +878,39 @@ class MapTab(ctk.CTkFrame):
         )
 
     def refresh_hotspots(self) -> None:
+        layer = self.active_layer.get()
+        if layer not in RESOURCE_DEFINITIONS:
+            self._set_hotspot_text(
+                "Choose one heatmap layer first."
+            )
+            return
+
+        bundle = self.context.heatmap_bundle
+        if bundle is None:
+            self._set_hotspot_text(
+                "Load and analyze a map first."
+            )
+            return
+
         hotspots = rank_hotspots(
-            self.context.heatmap_bundle,
-            self.selected_resources(),
+            bundle,
+            [layer],
+            limit=8,
         )
+        if not hotspots:
+            self._set_hotspot_text(
+                (
+                    f"No usable {layer} intensity was found "
+                    "in the current analysis."
+                )
+            )
+            return
+
         world_size = self.current_world_size()
-        lines = []
+        lines = [
+            f"TOP {layer.upper()} ZONES",
+            "",
+        ]
         for index, hotspot in enumerate(
             hotspots,
             start=1,
@@ -1037,38 +920,38 @@ class MapTab(ctk.CTkFrame):
                 hotspot.y_fraction,
                 world_size,
             )
-            if world_size:
-                world_x = (
-                    hotspot.x_fraction * world_size
-                    - world_size / 2
-                )
-                world_y = (
-                    hotspot.y_fraction * world_size
-                    - world_size / 2
-                )
-                coordinates = (
-                    f"world ({world_x:.0f}, {world_y:.0f})"
-                )
-            else:
-                coordinates = (
-                    f"{hotspot.x_fraction * 100:.1f}%, "
-                    f"{hotspot.y_fraction * 100:.1f}%"
-                )
             lines.append(
-                f"{index}. {grid} · {coordinates} · "
-                f"intensity {hotspot.intensity}/255"
+                (
+                    f"{index}. Grid {grid}  ·  "
+                    f"intensity {hotspot.intensity}/255"
+                )
             )
-        self.hotspot_box.delete("1.0", "end")
-        self.hotspot_box.insert(
-            "1.0",
+        lines.extend(
+            [
+                "",
+                (
+                    "Hot zones rank the selected layer only. "
+                    "Predictive layers are estimates, not live "
+                    "entity coordinates."
+                ),
+            ]
+        )
+        self._set_hotspot_text(
             "\n".join(lines)
-            if lines
-            else (
-                "No hotspot density is available for "
-                "the selected layers."
-            ),
         )
 
+    def _set_hotspot_text(
+        self,
+        text: str,
+    ) -> None:
+        self.hotspot_box.delete("1.0", "end")
+        self.hotspot_box.insert("1.0", text)
+
     def on_context_updated(self) -> None:
-        self.current_world_size()
-        self.render_map()
+        # Data refreshes never auto-enable a heatmap.
+        if (
+            self.context.map_image is not None
+            and self.map_label.cget("text")
+            == ""
+        ):
+            self.render_map()

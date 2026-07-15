@@ -26,7 +26,6 @@ from rust_companion_plus.ui.tabs.map_tab import MapTab
 from rust_companion_plus.ui.tabs.notes import NotesTab
 from rust_companion_plus.ui.tabs.shops import ShopsTab
 from rust_companion_plus.ui.tabs.team import TeamTab
-from rust_companion_plus.ui.tabs.threats import ThreatsTab
 from rust_companion_plus.ui.tabs.tools import ToolsTab
 
 
@@ -672,7 +671,7 @@ class RustCompanionApp(ctk.CTk):
                 else ""
             )
         )
-        self.geometry("1480x900")
+        self.geometry("1520x920")
         self.minsize(1180, 720)
 
         self.context = AppContext(
@@ -702,8 +701,9 @@ class RustCompanionApp(ctk.CTk):
 
         self.sidebar = ctk.CTkFrame(
             self,
-            width=225,
+            width=240,
             corner_radius=0,
+            fg_color=("#eef2f7", "#111827"),
         )
         self.sidebar.grid(
             row=0,
@@ -766,7 +766,7 @@ class RustCompanionApp(ctk.CTk):
         self.content = ctk.CTkFrame(
             self,
             corner_radius=0,
-            fg_color="transparent",
+            fg_color=("#f6f8fb", "#0b111b"),
         )
         self.content.grid(
             row=0,
@@ -785,15 +785,11 @@ class RustCompanionApp(ctk.CTk):
                 self.content,
                 self.context,
             ),
-            "Shops": ShopsTab(
-                self.content,
-                self.context,
-            ),
             "Team": TeamTab(
                 self.content,
                 self.context,
             ),
-            "Threats": ThreatsTab(
+            "Shops": ShopsTab(
                 self.content,
                 self.context,
             ),
@@ -811,13 +807,36 @@ class RustCompanionApp(ctk.CTk):
             ),
         }
 
+        ctk.CTkLabel(
+            self.sidebar,
+            text="NAVIGATION",
+            text_color=("#64748b", "#64748b"),
+            font=ctk.CTkFont(
+                size=10,
+                weight="bold",
+            ),
+            anchor="w",
+        ).pack(
+            fill="x",
+            padx=22,
+            pady=(4, 6),
+        )
+
+        self.nav_buttons: dict[str, ctk.CTkButton] = {}
         for name in self.tabs:
             button = ctk.CTkButton(
                 self.sidebar,
                 text=name,
                 anchor="w",
+                height=40,
+                corner_radius=8,
                 fg_color="transparent",
-                hover_color=("#d1d5db", "#28303b"),
+                hover_color=("#dbe3ee", "#263244"),
+                text_color=("#334155", "#dbe5f1"),
+                font=ctk.CTkFont(
+                    size=13,
+                    weight="bold",
+                ),
                 command=lambda selected=name: self.show_tab(
                     selected
                 ),
@@ -827,6 +846,8 @@ class RustCompanionApp(ctk.CTk):
                 padx=12,
                 pady=3,
             )
+            self.nav_buttons[name] = button
+
 
         self.connection_badge = ctk.CTkLabel(
             self.sidebar,
@@ -879,10 +900,37 @@ class RustCompanionApp(ctk.CTk):
         if self.current_tab:
             self.tabs[self.current_tab].grid_forget()
         self.current_tab = name
-        self.tabs[name].grid(row=0, column=0, sticky="nsew", padx=16, pady=16)
-        refresh = getattr(self.tabs[name], "refresh", None)
+        self.tabs[name].grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=20,
+            pady=20,
+        )
+
+        for label, button in self.nav_buttons.items():
+            active = label == name
+            button.configure(
+                fg_color=(
+                    ACCENT
+                    if active
+                    else "transparent"
+                ),
+                text_color=(
+                    "#ffffff"
+                    if active
+                    else ("#334155", "#dbe5f1")
+                ),
+            )
+
+        refresh = getattr(
+            self.tabs[name],
+            "refresh",
+            None,
+        )
         if callable(refresh):
             refresh()
+
 
 
     def notify_data_changed(self) -> None:

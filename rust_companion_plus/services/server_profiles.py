@@ -372,13 +372,19 @@ def parse_current_server_map(
     world_size: int,
     map_image: Image.Image | None = None,
     markers: Iterable[dict[str, Any]] | None = None,
+    force_refresh: bool = False,
     root: Path = PROFILE_ROOT,
 ) -> ParsedMapResult:
-    """Analyze the current Rust+ map without an external executable."""
-    record = profile_record if isinstance(
-        profile_record,
-        dict,
-    ) else {}
+    """Analyze the current Rust+ map without an external executable.
+
+    Saved analysis is reused for offline viewing. Online map loading passes
+    force_refresh=True so the newly fetched map is analyzed before display.
+    """
+    record = (
+        profile_record
+        if isinstance(profile_record, dict)
+        else {}
+    )
     existing = discover_saved_parsed_map(
         key,
         record,
@@ -397,7 +403,8 @@ def parse_current_server_map(
         detection,
         record,
     )
-    if existing is not None:
+
+    if existing is not None and not force_refresh:
         return ParsedMapResult(
             source_dir=existing,
             raw_map_path=(
@@ -411,19 +418,25 @@ def parse_current_server_map(
 
     if map_image is None:
         raise ValueError(
-            "The current Rust+ map image is not loaded. "
-            "Use Load current map, then run Analyze current map."
+            "The current Rust+ map image is not loaded."
         )
 
     output = default_parsed_map_dir(
         key,
         root=root,
     )
-    if output.exists() and not is_parsed_map_directory(
-        output
+    if output.exists() and (
+        force_refresh
+        or not is_parsed_map_directory(output)
     ):
-        shutil.rmtree(output, ignore_errors=True)
-    output.mkdir(parents=True, exist_ok=True)
+        shutil.rmtree(
+            output,
+            ignore_errors=True,
+        )
+    output.mkdir(
+        parents=True,
+        exist_ok=True,
+    )
 
     analysis = analyze_map_image(
         map_image,
@@ -446,6 +459,7 @@ def parse_current_server_map(
         map_url=map_url,
         created=True,
     )
+
 
 
 

@@ -18,7 +18,7 @@ from rust_companion_plus.config import APP_DATA_DIR
 
 RESOURCE_DEFINITIONS: dict[str, dict[str, Any]] = {
     "Stone": {
-        "color": (180, 180, 180),
+        "color": (186, 186, 186),
         "aliases": (
             "stone ore",
             "stone_ore",
@@ -29,7 +29,7 @@ RESOURCE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "kind": "likelihood",
     },
     "Metal": {
-        "color": (74, 144, 226),
+        "color": (66, 153, 225),
         "aliases": (
             "metal ore",
             "metal_ore",
@@ -63,7 +63,7 @@ RESOURCE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "kind": "likelihood",
     },
     "Bear": {
-        "color": (120, 72, 36),
+        "color": (124, 83, 54),
         "aliases": (
             "bear.prefab",
             "/bear/",
@@ -107,37 +107,40 @@ RESOURCE_DEFINITIONS: dict[str, dict[str, Any]] = {
         ),
         "kind": "habitat",
     },
-    "Water": {
-        "color": (14, 165, 233),
+    "Monument Proximity": {
+        "color": (56, 189, 248),
         "aliases": (
-            "water mask",
-            "water layer",
+            "monument proximity",
+            "monument marker",
+            "monument",
         ),
         "kind": "static",
     },
+    "Water": {
+        "color": (14, 165, 233),
+        "aliases": ("water mask", "water"),
+        "kind": "static",
+    },
     "Coastline": {
-        "color": (34, 211, 238),
-        "aliases": (
-            "coastline",
-            "coast line",
-            "shoreline",
-        ),
+        "color": (6, 182, 212),
+        "aliases": ("coastline", "coast"),
         "kind": "static",
     },
     "Road Access": {
         "color": (251, 146, 60),
         "aliases": (
             "road access",
-            "road mask",
+            "road density",
             "roads",
         ),
-        "kind": "derived",
+        "kind": "static",
     },
     "Snow Biome": {
         "color": (226, 232, 240),
         "aliases": (
             "snow biome",
             "snow mask",
+            "snow",
         ),
         "kind": "static",
     },
@@ -146,28 +149,30 @@ RESOURCE_DEFINITIONS: dict[str, dict[str, Any]] = {
         "aliases": (
             "desert biome",
             "desert mask",
+            "desert",
         ),
         "kind": "static",
     },
     "Temperate Biome": {
-        "color": (34, 197, 94),
+        "color": (74, 222, 128),
         "aliases": (
             "temperate biome",
-            "grass biome",
-            "forest biome",
+            "temperate mask",
+            "temperate",
         ),
         "kind": "static",
     },
     "Rough Terrain": {
-        "color": (239, 68, 68),
+        "color": (203, 213, 225),
         "aliases": (
             "rough terrain",
             "terrain roughness",
-            "cliff terrain",
+            "roughness",
         ),
-        "kind": "derived",
+        "kind": "static",
     },
 }
+
 
 
 

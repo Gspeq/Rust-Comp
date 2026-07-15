@@ -1,4 +1,3 @@
-
 from __future__ import annotations
 
 import tempfile
@@ -13,7 +12,7 @@ from rust_companion_plus.services.rustplus_client import (
 from rust_companion_plus.storage import JsonStore
 
 
-class AutomaticThreatAndDeathTests(unittest.TestCase):
+class AutomaticDeathAndWorkflowTests(unittest.TestCase):
     def context(self, path: Path) -> AppContext:
         return AppContext(
             store=JsonStore(path),
@@ -26,7 +25,7 @@ class AutomaticThreatAndDeathTests(unittest.TestCase):
             ),
         )
 
-    def test_self_death_updates_threats_and_last_ten(self) -> None:
+    def test_self_death_updates_last_ten_positions(self) -> None:
         with tempfile.TemporaryDirectory() as temporary:
             context = self.context(
                 Path(temporary) / "store.json"
@@ -66,57 +65,64 @@ class AutomaticThreatAndDeathTests(unittest.TestCase):
                 current,
             )
 
-            threats = context.store.get("threats", [])
-            deaths = context.store.get("death_history", [])
-            self.assertEqual(1, len(threats))
-            self.assertEqual("death", threats[0]["event_type"])
-            self.assertEqual("Unknown", threats[0]["attacker"])
+            deaths = context.store.get(
+                "death_history",
+                [],
+            )
             self.assertEqual(1, len(deaths))
-            self.assertEqual("Taylor", deaths[0]["name"])
+            self.assertEqual(
+                "Taylor",
+                deaths[0]["name"],
+            )
             self.assertTrue(deaths[0]["grid"])
-            self.assertAlmostEqual(350.0, deaths[0]["x"])
-            self.assertAlmostEqual(-525.0, deaths[0]["y"])
-
-    def test_world_event_updates_threat_log(self) -> None:
-        with tempfile.TemporaryDirectory() as temporary:
-            context = self.context(
-                Path(temporary) / "store.json"
+            self.assertAlmostEqual(
+                350.0,
+                deaths[0]["x"],
             )
-            previous = ServerSnapshot(
-                server={"size": 3700},
-                team=[],
-                markers=[],
-            )
-            current = ServerSnapshot(
-                server={"size": 3700},
-                team=[],
-                markers=[
-                    {
-                        "id": 42,
-                        "type": 8,
-                        "x": 100,
-                        "y": 200,
-                    }
-                ],
+            self.assertAlmostEqual(
+                -525.0,
+                deaths[0]["y"],
             )
 
-            context._record_snapshot_changes(
-                previous,
-                current,
-            )
+    def test_threats_tab_is_removed(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        app = (
+            root / "rust_companion_plus" / "app.py"
+        ).read_text(encoding="utf-8")
+        self.assertNotIn("ThreatsTab", app)
+        self.assertNotIn('"Threats":', app)
 
-            threats = context.store.get("threats", [])
-            self.assertEqual(1, len(threats))
-            self.assertEqual(
-                "world_event",
-                threats[0]["event_type"],
-            )
-            self.assertEqual(
-                "Patrol Helicopter",
-                threats[0]["attacker"],
-            )
+    def test_map_starts_without_a_heatmap(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (
+            root
+            / "rust_companion_plus"
+            / "ui"
+            / "tabs"
+            / "map_tab.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            'value=NO_HEATMAP',
+            source,
+        )
+        self.assertIn(
+            "Load & analyze current map",
+            source,
+        )
+        self.assertIn(
+            "View saved analyzed map",
+            source,
+        )
+        self.assertIn(
+            "force_refresh=True",
+            source,
+        )
+        self.assertNotIn(
+            'text="Analyze current map"',
+            source,
+        )
 
-    def test_tools_page_keeps_only_useful_utilities(self) -> None:
+    def test_utilities_remove_tc_upkeep(self) -> None:
         root = Path(__file__).resolve().parents[1]
         source = (
             root
@@ -125,13 +131,40 @@ class AutomaticThreatAndDeathTests(unittest.TestCase):
             / "tabs"
             / "tools.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('"TC Upkeep"', source)
+        self.assertIn('"Grid & Distance"', source)
         self.assertIn('"Recycle"', source)
         self.assertIn('"Smart Devices"', source)
-        self.assertNotIn('"Building"', source)
-        self.assertNotIn('"Farming"', source)
-        self.assertNotIn('"Plants"', source)
-        self.assertNotIn('"Loot"', source)
+        self.assertNotIn('"TC Upkeep"', source)
+        self.assertNotIn(
+            "calculate_upkeep_hours",
+            source,
+        )
+
+    def test_team_page_has_live_intelligence(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source = (
+            root
+            / "rust_companion_plus"
+            / "ui"
+            / "tabs"
+            / "team.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "Team Intelligence",
+            source,
+        )
+        self.assertIn(
+            "Monument",
+            source,
+        )
+        self.assertIn(
+            "My last 10 deaths",
+            source,
+        )
+        self.assertIn(
+            "TEAM POSITION SUMMARY",
+            source,
+        )
 
 
 if __name__ == "__main__":
