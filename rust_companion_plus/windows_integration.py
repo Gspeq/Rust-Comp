@@ -14,6 +14,39 @@ UNINSTALL_REGISTRY_KEY = (
 )
 
 
+def hide_console_window() -> bool:
+    """Hide the launch console after the GUI is visible.
+
+    Frozen releases always hide it. Source testing may opt in through
+    RUST_COMPANION_HIDE_CONSOLE_AFTER_GUI so the bootloader remains usable
+    before the GUI starts.
+    """
+    requested = bool(getattr(sys, "frozen", False))
+    requested = requested or os.environ.get(
+        "RUST_COMPANION_HIDE_CONSOLE_AFTER_GUI",
+        "",
+    ).strip().casefold() in {
+        "1",
+        "true",
+        "yes",
+        "on",
+    }
+
+    if os.name != "nt" or not requested:
+        return False
+
+    try:
+        import ctypes
+
+        handle = ctypes.windll.kernel32.GetConsoleWindow()
+        if not handle:
+            return False
+        ctypes.windll.user32.ShowWindow(handle, 0)
+        return True
+    except Exception:
+        return False
+
+
 def installed_application_dir() -> Path:
     return Path(sys.executable).resolve().parent
 

@@ -844,8 +844,8 @@ def _probe_rustplus_websocket(
     *,
     timeout: float = 1.75,
 ) -> tuple[bool, str]:
-    if not host or not 10000 <= int(port) <= 65535:
-        return False, "candidate is outside Rust+ port requirements"
+    if not host or not 1 <= int(port) <= 65535:
+        return False, "candidate is outside valid TCP port requirements"
 
     key = base64.b64encode(os.urandom(16)).decode("ascii")
     expected_accept = base64.b64encode(

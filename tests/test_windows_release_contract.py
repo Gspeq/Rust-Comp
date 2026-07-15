@@ -169,6 +169,94 @@ class WindowsReleaseContractTests(unittest.TestCase):
             builder,
         )
 
+    def test_packaged_rustplus_transport_is_pinned(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        requirements = (root / "requirements.txt").read_text(
+            encoding="utf-8"
+        )
+        self.assertIn("rustplus==6.0.11", requirements)
+        self.assertIn("websockets==13.1", requirements)
+
+        spec = (
+            root / "packaging" / "RustCompanionPlus.spec"
+        ).read_text(encoding="utf-8")
+        self.assertIn("websockets.legacy.client", spec)
+        self.assertIn("websockets.legacy.protocol", spec)
+
+    def test_gui_hides_packaged_console_after_launch(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        integration = (
+            root
+            / "rust_companion_plus"
+            / "windows_integration.py"
+        ).read_text(encoding="utf-8")
+        app = (
+            root / "rust_companion_plus" / "app.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("GetConsoleWindow", integration)
+        self.assertIn("ShowWindow", integration)
+        self.assertIn(
+            "self.after(350, hide_console_window)",
+            app,
+        )
+
+    def test_gui_surfaces_rustplus_refresh_failure(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        app = (
+            root / "rust_companion_plus" / "app.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn('"Rust+ reconnecting"', app)
+        self.assertIn("first_new_error", app)
+    def test_source_runner_never_builds_release(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        runner = (root / "run_source.ps1").read_text(
+            encoding="utf-8"
+        )
+        lowered = runner.casefold()
+        self.assertIn(
+            "rust_companion_hide_console_after_gui",
+            lowered,
+        )
+        self.assertNotIn("pyinstaller", lowered)
+        self.assertNotIn("inno setup", lowered)
+        self.assertNotIn("build_windows_release", lowered)
+
+    def test_test_runner_never_builds_release(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        runner = (root / "test_source.ps1").read_text(
+            encoding="utf-8"
+        )
+        lowered = runner.casefold()
+        self.assertIn("unittest discover", lowered)
+        self.assertIn("git diff --check", lowered)
+        self.assertNotIn("build_windows_release", lowered)
+
+    def test_release_builder_remains_manual(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        source_launcher = (
+            root / "Run_Rust_Companion_Plus_Source.bat"
+        ).read_text(encoding="utf-8")
+        test_launcher = (
+            root / "Test_Rust_Companion_Plus.bat"
+        ).read_text(encoding="utf-8")
+        build_launcher = (
+            root / "Build_Rust_Companion_Plus.bat"
+        ).read_text(encoding="utf-8")
+
+        self.assertIn("run_source.ps1", source_launcher)
+        self.assertIn("test_source.ps1", test_launcher)
+        self.assertIn(
+            "build_windows_release.ps1",
+            build_launcher,
+        )
+        self.assertNotIn(
+            "build_windows_release.ps1",
+            source_launcher,
+        )
+        self.assertNotIn(
+            "build_windows_release.ps1",
+            test_launcher,
+        )
 
 if __name__ == "__main__":
     unittest.main()

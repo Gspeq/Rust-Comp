@@ -36,6 +36,7 @@ for package in (
     "platformdirs",
     "psutil",
     "rustplus",
+    "websockets",
     "webview",
     "push_receiver",
 ):
@@ -65,6 +66,8 @@ for package in (
 for module in (
     "webview",
     "webview.platforms",
+    "websockets.legacy.client",
+    "websockets.legacy.protocol",
     "push_receiver",
 ):
     try:

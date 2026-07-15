@@ -14,7 +14,10 @@ from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerS
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
 from rust_companion_plus.services.server_profiles import ServerProfileVault
 from rust_companion_plus.storage import JsonStore
-from rust_companion_plus.windows_integration import request_uninstall
+from rust_companion_plus.windows_integration import (
+    hide_console_window,
+    request_uninstall,
+)
 from rust_companion_plus.ui.common import ACCENT
 from rust_companion_plus.ui.tabs.dashboard import DashboardTab
 from rust_companion_plus.ui.tabs.electrical import ElectricalTab
@@ -669,6 +672,7 @@ class RustCompanionApp(ctk.CTk):
             self._on_close,
         )
         self.after(100, self.notify_data_changed)
+        self.after(350, hide_console_window)
 
         if not state.profile_mode:
             self.after(500, self.refresh_detection_now)
@@ -986,8 +990,11 @@ class RustCompanionApp(ctk.CTk):
         def failure(exc: Exception) -> None:
             self._rustplus_busy = False
             self.context.rustplus_live = False
-            message = str(exc)
+            message = str(exc).strip() or "Unknown Rust+ failure"
             now = time.monotonic()
+            first_new_error = (
+                message != self._last_rustplus_error
+            )
             if (
                 message != self._last_rustplus_error
                 or now - self._last_rustplus_error_at >= 30.0
@@ -1002,6 +1009,21 @@ class RustCompanionApp(ctk.CTk):
                 )
                 self._last_rustplus_error = message
                 self._last_rustplus_error_at = now
+            if first_new_error:
+                messagebox.showwarning(
+                    "Rust+ reconnecting",
+                    (
+                        "The GUI opened, but live Rust+ failed:\n\n"
+                        f"{message[:300]}\n\n"
+                        "Cached information remains available. "
+                        "The app will keep retrying automatically."
+                    ),
+                    parent=self,
+                )
+            self.connection_badge.configure(
+                text="● Rust+ Reconnecting",
+                text_color=("#92400e", "#fbbf24"),
+            )
             self.notify_data_changed()
             self.after(
                 self.RUSTPLUS_INTERVAL_MS,
