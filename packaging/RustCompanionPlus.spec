@@ -9,7 +9,18 @@ from PyInstaller.utils.hooks import (
 )
 
 
-ROOT = Path(SPECPATH).resolve().parent.parent
+# PyInstaller exposes SPECPATH as the directory containing this spec.
+# This file lives in <repo>/packaging, so its parent is the repository.
+SPEC_DIR = Path(SPECPATH).resolve()
+ROOT = SPEC_DIR.parent
+ENTRYPOINT = ROOT / "main.py"
+
+if not ENTRYPOINT.is_file():
+    raise SystemExit(
+        "Rust Companion+ build entrypoint was not found: "
+        f"{ENTRYPOINT}"
+    )
+
 ICON = ROOT / "packaging" / "rust_companion_plus.ico"
 VERSION_FILE = (
     ROOT / "packaging" / "windows_version_info.txt"
@@ -71,7 +82,7 @@ if project_data.is_dir():
     )
 
 analysis = Analysis(
-    [str(ROOT / "main.py")],
+    [str(ENTRYPOINT)],
     pathex=[str(ROOT)],
     binaries=binaries,
     datas=datas,

@@ -122,6 +122,45 @@ class WindowsReleaseContractTests(unittest.TestCase):
         self.assertIn("Uninstall Rust Companion+", app_source)
         self.assertIn("request_uninstall", app_source)
 
+    def test_spec_resolves_repository_entrypoint(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        spec = (
+            root / "packaging" / "RustCompanionPlus.spec"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "SPEC_DIR = Path(SPECPATH).resolve()",
+            spec,
+        )
+        self.assertIn("ROOT = SPEC_DIR.parent", spec)
+        self.assertNotIn("parent.parent", spec)
+        self.assertIn(
+            'ENTRYPOINT = ROOT / "main.py"',
+            spec,
+        )
+        self.assertIn(
+            "if not ENTRYPOINT.is_file()",
+            spec,
+        )
+        self.assertIn("[str(ENTRYPOINT)]", spec)
+
+    def test_builder_preflights_resolved_entrypoint(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        builder = (
+            root / "build_windows_release.ps1"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '$Entrypoint = Join-Path $Repo "main.py"',
+            builder,
+        )
+        self.assertIn(
+            "PyInstaller entrypoint: $ResolvedEntrypoint",
+            builder,
+        )
+        self.assertIn(
+            "$EntrypointParent -ne $ResolvedRepo",
+            builder,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

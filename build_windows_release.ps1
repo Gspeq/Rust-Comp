@@ -67,6 +67,7 @@ $BundleDir = Join-Path $DistRoot "RustCompanionPlus"
 $InstallerOutput = Join-Path $Repo "release"
 $SpecPath = Join-Path $Repo "packaging\RustCompanionPlus.spec"
 $IssPath = Join-Path $Repo "packaging\RustCompanionPlus.iss"
+$Entrypoint = Join-Path $Repo "main.py"
 $IconPath = Join-Path $Repo "packaging\rust_companion_plus.ico"
 $VersionInfoPath = Join-Path $Repo "packaging\windows_version_info.txt"
 
@@ -83,6 +84,36 @@ foreach ($Relative in $Forbidden) {
         Fail "Development-only file is still present: $Relative"
     }
 }
+
+if (-not (Test-Path $Entrypoint -PathType Leaf)) {
+    Fail "Missing PyInstaller entrypoint: $Entrypoint"
+}
+
+$SpecText = Get-Content $SpecPath -Raw
+if ($SpecText -match 'parent\.parent') {
+    Fail (
+        "The PyInstaller spec still resolves above the repository. " +
+        "Expected packaging -> repository, not packaging -> repository -> parent."
+    )
+}
+if (
+    $SpecText -notmatch 'ROOT\s*=\s*SPEC_DIR\.parent' -or
+    $SpecText -notmatch 'ENTRYPOINT\s*=\s*ROOT\s*/\s*"main\.py"'
+) {
+    Fail "The PyInstaller spec does not declare the verified repository entrypoint."
+}
+
+$ResolvedRepo = (Resolve-Path $Repo).Path
+$ResolvedEntrypoint = (Resolve-Path $Entrypoint).Path
+$EntrypointParent = Split-Path -Parent $ResolvedEntrypoint
+if ($EntrypointParent -ne $ResolvedRepo) {
+    Fail (
+        "Resolved entrypoint is outside the repository: " +
+        $ResolvedEntrypoint
+    )
+}
+Write-Host "PyInstaller repository: $ResolvedRepo"
+Write-Host "PyInstaller entrypoint: $ResolvedEntrypoint"
 
 Step "Creating isolated release environment"
 if (-not (Test-Path $ReleasePython)) {
