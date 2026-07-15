@@ -6,6 +6,7 @@ from tkinter import ttk
 from typing import Any, Callable, Iterable
 
 import customtkinter as ctk
+from PIL import Image, ImageDraw, ImageOps
 
 from rust_companion_plus.services.item_catalog import RustItemCatalog
 from rust_companion_plus.ui.common import (
@@ -299,6 +300,208 @@ def _as_float(value: Any) -> float:
         return 0.0
 
 
+
+# SHOP_ITEM_MINIMAP_HOTFIX_V2
+SHOP_MINIMAP_SIZE = (310, 310)
+
+
+def shop_map_fraction(
+    x: Any,
+    y: Any,
+    map_size: Any,
+) -> tuple[float, float] | None:
+    """Convert Rust world coordinates into top-left image fractions."""
+    try:
+        numeric_x = float(x)
+        numeric_y = float(y)
+        numeric_size = float(map_size)
+    except (TypeError, ValueError):
+        return None
+    if numeric_size <= 0:
+        return None
+
+    # Rust+ vending markers normally use 0..world-size coordinates. Some
+    # cached/community payloads use a centered -half..+half convention, so
+    # negative values are normalized through that convention as a fallback.
+    if numeric_x < 0 or numeric_y < 0:
+        half = numeric_size / 2.0
+        x_fraction = (numeric_x + half) / numeric_size
+        world_y_fraction = (numeric_y + half) / numeric_size
+    else:
+        x_fraction = numeric_x / numeric_size
+        world_y_fraction = numeric_y / numeric_size
+
+    x_fraction = min(1.0, max(0.0, x_fraction))
+    world_y_fraction = min(1.0, max(0.0, world_y_fraction))
+    return x_fraction, 1.0 - world_y_fraction
+
+
+def matching_shop_rows(
+    rows: Iterable[ShopOrderRow],
+    selected: ShopOrderRow,
+) -> list[ShopOrderRow]:
+    """Keep the exact clicked offer, plus one best offer per other shop."""
+    by_shop: dict[str, ShopOrderRow] = {
+        selected.shop_key: selected,
+    }
+    for row in rows:
+        if row.item_id != selected.item_id:
+            continue
+        if row.item_is_blueprint != selected.item_is_blueprint:
+            continue
+
+        # Preserve the exact row the user clicked. A duplicate offer from the
+        # same vending machine must never replace the orange selected marker.
+        if row.shop_key == selected.shop_key:
+            continue
+
+        current = by_shop.get(row.shop_key)
+        if current is None:
+            by_shop[row.shop_key] = row
+            continue
+
+        candidate_key = (
+            0 if row.stock > 0 else 1,
+            row.cost,
+            -row.stock,
+        )
+        current_key = (
+            0 if current.stock > 0 else 1,
+            current.cost,
+            -current.stock,
+        )
+        if candidate_key < current_key:
+            by_shop[row.shop_key] = row
+
+    return sorted(
+        by_shop.values(),
+        key=lambda row: (
+            0 if row.shop_key == selected.shop_key else 1,
+            0 if row.stock > 0 else 1,
+            row.cost,
+            row.grid,
+            row.shop.casefold(),
+        ),
+    )
+
+
+def render_shop_minimap(
+    base_image: Any,
+    rows: Iterable[ShopOrderRow],
+    selected: ShopOrderRow,
+    map_size: int,
+    *,
+    output_size: tuple[int, int] = SHOP_MINIMAP_SIZE,
+) -> Image.Image:
+    """Render a map thumbnail with matching shops and selected-shop focus."""
+    width = max(120, int(output_size[0]))
+    height = max(120, int(output_size[1]))
+    size = (width, height)
+
+    if isinstance(base_image, Image.Image):
+        base = ImageOps.fit(
+            base_image.convert("RGBA"),
+            size,
+            method=Image.Resampling.LANCZOS,
+        )
+    else:
+        base = Image.new("RGBA", size, (9, 15, 28, 255))
+        grid_draw = ImageDraw.Draw(base, "RGBA")
+        for index in range(1, 10):
+            x_line = round(width * index / 10)
+            y_line = round(height * index / 10)
+            grid_draw.line(
+                (x_line, 0, x_line, height),
+                fill=(71, 85, 105, 72),
+                width=1,
+            )
+            grid_draw.line(
+                (0, y_line, width, y_line),
+                fill=(71, 85, 105, 72),
+                width=1,
+            )
+
+    draw = ImageDraw.Draw(base, "RGBA")
+    matches = matching_shop_rows(rows, selected)
+
+    selected_point: tuple[int, int] | None = None
+    for row in reversed(matches):
+        fractions = shop_map_fraction(row.x, row.y, map_size)
+        if fractions is None:
+            continue
+        x_fraction, y_fraction = fractions
+        pixel_x = round(x_fraction * (width - 1))
+        pixel_y = round(y_fraction * (height - 1))
+
+        is_selected = row.shop_key == selected.shop_key
+        if is_selected:
+            selected_point = (pixel_x, pixel_y)
+            continue
+
+        radius = 7
+        fill = (
+            (34, 197, 94, 238)
+            if row.stock > 0
+            else (100, 116, 139, 220)
+        )
+        draw.ellipse(
+            (
+                pixel_x - radius,
+                pixel_y - radius,
+                pixel_x + radius,
+                pixel_y + radius,
+            ),
+            fill=fill,
+            outline=(248, 250, 252, 240),
+            width=2,
+        )
+
+    if selected_point is not None:
+        pixel_x, pixel_y = selected_point
+        radius = 13
+        draw.ellipse(
+            (
+                pixel_x - radius,
+                pixel_y - radius,
+                pixel_x + radius,
+                pixel_y + radius,
+            ),
+            fill=(245, 158, 11, 248),
+            outline=(255, 255, 255, 255),
+            width=3,
+        )
+        draw.line(
+            (pixel_x - 18, pixel_y, pixel_x + 18, pixel_y),
+            fill=(255, 255, 255, 240),
+            width=2,
+        )
+        draw.line(
+            (pixel_x, pixel_y - 18, pixel_x, pixel_y + 18),
+            fill=(255, 255, 255, 240),
+            width=2,
+        )
+
+    badge_width = min(width - 16, 172)
+    draw.rounded_rectangle(
+        (8, 8, 8 + badge_width, 50),
+        radius=8,
+        fill=(15, 23, 42, 224),
+        outline=(148, 163, 184, 145),
+        width=1,
+    )
+    draw.text(
+        (16, 15),
+        f"{len(matches)} matching shop(s)",
+        fill=(248, 250, 252, 255),
+    )
+    draw.text(
+        (16, 31),
+        f"Selected: {selected.grid}",
+        fill=(251, 191, 36, 255),
+    )
+    return base
+
+
 class _MetricTile(ctk.CTkFrame):
     def __init__(
         self,
@@ -368,6 +571,10 @@ class ShopsTab(ctk.CTkFrame):
         self._last_signature: tuple[tuple[Any, ...], ...] | None = None
         self._catalog_loading = False
         self._visible_rows: list[ShopOrderRow] = []
+        self._minimap_ctk_image = None
+        self._minimap_cache_key: tuple[Any, ...] | None = None
+        self._minimap_loading = False
+        self._minimap_load_failed = False
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(4, weight=1)
@@ -732,7 +939,6 @@ class ShopsTab(ctk.CTkFrame):
         table_header.grid(
             row=0,
             column=0,
-            columnspan=2,
             sticky="ew",
             padx=14,
             pady=(12, 8),
@@ -753,6 +959,30 @@ class ShopsTab(ctk.CTkFrame):
         )
         self.table_note.grid(row=0, column=1, sticky="e")
 
+        body = ctk.CTkFrame(card, fg_color="transparent")
+        body.grid(
+            row=1,
+            column=0,
+            sticky="nsew",
+            padx=12,
+        )
+        body.grid_columnconfigure(0, weight=1)
+        body.grid_columnconfigure(1, weight=0, minsize=346)
+        body.grid_rowconfigure(0, weight=1)
+
+        table_frame = ctk.CTkFrame(
+            body,
+            fg_color="transparent",
+        )
+        table_frame.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=(0, 10),
+        )
+        table_frame.grid_columnconfigure(0, weight=1)
+        table_frame.grid_rowconfigure(0, weight=1)
+
         self._configure_tree_style()
         columns = (
             "shop",
@@ -766,29 +996,29 @@ class ShopsTab(ctk.CTkFrame):
             "type",
         )
         self.tree = ttk.Treeview(
-            card,
+            table_frame,
             columns=columns,
             show="headings",
             style="RustShop.Treeview",
             selectmode="browse",
         )
         settings = (
-            ("shop", "Shop", 215, "w"),
-            ("grid", "Grid", 72, "center"),
-            ("coordinates", "Coordinates", 105, "center"),
-            ("sells", "Shop sells", 225, "w"),
-            ("quantity", "Qty", 58, "center"),
-            ("wants", "Shop wants", 225, "w"),
-            ("cost", "Cost", 65, "center"),
-            ("stock", "Stock", 70, "center"),
-            ("type", "Offer", 100, "center"),
+            ("shop", "Shop", 190, "w"),
+            ("grid", "Grid", 68, "center"),
+            ("coordinates", "Coordinates", 96, "center"),
+            ("sells", "Shop sells", 195, "w"),
+            ("quantity", "Qty", 54, "center"),
+            ("wants", "Shop wants", 185, "w"),
+            ("cost", "Cost", 60, "center"),
+            ("stock", "Stock", 62, "center"),
+            ("type", "Offer", 92, "center"),
         )
         for column, heading, width, anchor in settings:
             self.tree.heading(column, text=heading)
             self.tree.column(
                 column,
                 width=width,
-                minwidth=52,
+                minwidth=50,
                 anchor=anchor,
                 stretch=column in {"shop", "sells", "wants"},
             )
@@ -815,10 +1045,9 @@ class ShopsTab(ctk.CTkFrame):
         )
 
         self.tree.grid(
-            row=1,
+            row=0,
             column=0,
             sticky="nsew",
-            padx=(12, 0),
         )
         self.tree.bind(
             "<<TreeviewSelect>>",
@@ -830,31 +1059,111 @@ class ShopsTab(ctk.CTkFrame):
         )
 
         vertical = ttk.Scrollbar(
-            card,
+            table_frame,
             orient="vertical",
             command=self.tree.yview,
         )
         vertical.grid(
-            row=1,
+            row=0,
             column=1,
             sticky="ns",
-            padx=(0, 12),
         )
         horizontal = ttk.Scrollbar(
-            card,
+            table_frame,
             orient="horizontal",
             command=self.tree.xview,
         )
         horizontal.grid(
-            row=2,
+            row=1,
             column=0,
             sticky="ew",
-            padx=(12, 0),
         )
         self.tree.configure(
             yscrollcommand=vertical.set,
             xscrollcommand=horizontal.set,
         )
+
+        minimap_panel = ctk.CTkFrame(
+            body,
+            width=346,
+            corner_radius=12,
+            border_width=1,
+            border_color=("#d1d5db", "#334155"),
+        )
+        minimap_panel.grid(
+            row=0,
+            column=1,
+            sticky="ns",
+        )
+        minimap_panel.grid_columnconfigure(0, weight=1)
+        minimap_panel.grid_rowconfigure(3, weight=1)
+
+        self.minimap_title = ctk.CTkLabel(
+            minimap_panel,
+            text="Item shop minimap",
+            font=ctk.CTkFont(size=15, weight="bold"),
+            anchor="w",
+        )
+        self.minimap_title.grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=12,
+            pady=(11, 2),
+        )
+        self.minimap_hint = ctk.CTkLabel(
+            minimap_panel,
+            text=(
+                "Click an offer. Orange is the selected shop; green "
+                "shows other shops carrying the same item."
+            ),
+            text_color=MUTED,
+            font=ctk.CTkFont(size=10),
+            anchor="w",
+            justify="left",
+            wraplength=316,
+        )
+        self.minimap_hint.grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=12,
+            pady=(0, 8),
+        )
+        self.minimap_label = ctk.CTkLabel(
+            minimap_panel,
+            text="Select an item offer to locate its shop.",
+            width=310,
+            height=310,
+            fg_color=("#e5e7eb", "#09101c"),
+            corner_radius=9,
+            text_color=MUTED,
+        )
+        self.minimap_label.grid(
+            row=2,
+            column=0,
+            padx=12,
+            pady=(0, 8),
+        )
+        self.minimap_shop_list = ctk.CTkTextbox(
+            minimap_panel,
+            width=310,
+            height=118,
+            corner_radius=8,
+            font=ctk.CTkFont(size=10),
+        )
+        self.minimap_shop_list.grid(
+            row=3,
+            column=0,
+            sticky="nsew",
+            padx=12,
+            pady=(0, 12),
+        )
+        self.minimap_shop_list.insert(
+            "1.0",
+            "Matching shop details appear here.",
+        )
+        self.minimap_shop_list.configure(state="disabled")
 
         detail = ctk.CTkFrame(
             card,
@@ -862,9 +1171,8 @@ class ShopsTab(ctk.CTkFrame):
             corner_radius=10,
         )
         detail.grid(
-            row=3,
+            row=2,
             column=0,
-            columnspan=2,
             sticky="ew",
             padx=12,
             pady=12,
@@ -1065,6 +1373,159 @@ class ShopsTab(ctk.CTkFrame):
             )
         )
         self.copy_button.configure(state="normal")
+        self._render_selected_minimap(row)
+
+    def _render_selected_minimap(
+        self,
+        row: ShopOrderRow,
+        *,
+        force: bool = False,
+    ) -> None:
+        matches = matching_shop_rows(self._visible_rows, row)
+        base_image = getattr(self.context, "map_image", None)
+        cache_key = (
+            row.shop_key,
+            row.item_id,
+            row.item_is_blueprint,
+            self._map_size(),
+            id(base_image),
+            tuple(
+                (
+                    match.shop_key,
+                    match.cost,
+                    match.stock,
+                )
+                for match in matches
+            ),
+        )
+        if not force and cache_key == self._minimap_cache_key:
+            return
+
+        image = render_shop_minimap(
+            base_image,
+            matches,
+            row,
+            self._map_size(),
+        )
+        self._minimap_ctk_image = ctk.CTkImage(
+            light_image=image,
+            dark_image=image,
+            size=SHOP_MINIMAP_SIZE,
+        )
+        self.minimap_label.configure(
+            image=self._minimap_ctk_image,
+            text="",
+        )
+
+        item_suffix = " blueprint" if row.item_is_blueprint else ""
+        self.minimap_title.configure(
+            text=(
+                f"{row.item_name}{item_suffix} · "
+                f"{len(matches)} shop(s)"
+            )
+        )
+        if base_image is None:
+            self.minimap_hint.configure(
+                text=(
+                    "Orange is selected; green is another matching shop. "
+                    "Loading the current Rust+ map texture in the background…"
+                )
+            )
+            self._request_minimap_base_map()
+        else:
+            self.minimap_hint.configure(
+                text=(
+                    "Orange is the selected shop. Green shops carry the "
+                    "same item; gray shops are out of stock."
+                )
+            )
+
+        lines: list[str] = []
+        for index, match in enumerate(matches[:7]):
+            selected_prefix = (
+                "SELECTED"
+                if match.shop_key == row.shop_key
+                else "IN STOCK"
+                if match.stock > 0
+                else "OUT"
+            )
+            lines.append(
+                f"{selected_prefix} · {match.grid} · {match.shop}\n"
+                f"  {match.quantity} x {match.item_name} for "
+                f"{match.cost} x {match.currency_name} · stock {match.stock}"
+            )
+        if len(matches) > 7:
+            lines.append(f"+ {len(matches) - 7} more matching shop(s)")
+
+        self.minimap_shop_list.configure(state="normal")
+        self.minimap_shop_list.delete("1.0", "end")
+        self.minimap_shop_list.insert(
+            "1.0",
+            "\n\n".join(lines) or "No matching shops.",
+        )
+        self.minimap_shop_list.configure(state="disabled")
+        self._minimap_cache_key = cache_key
+
+    def _request_minimap_base_map(self) -> None:
+        if self._minimap_loading or self._minimap_load_failed:
+            return
+        if getattr(self.context, "map_image", None) is not None:
+            return
+
+        credentials = getattr(self.context, "credentials", None)
+        rust_client = getattr(self.context, "rust", None)
+        if (
+            credentials is None
+            or rust_client is None
+            or not credentials.is_complete()
+        ):
+            self.minimap_hint.configure(
+                text=(
+                    "Using a coordinate grid because no cached map texture "
+                    "or complete Rust+ profile is available."
+                )
+            )
+            return
+
+        self._minimap_loading = True
+
+        def work():
+            return rust_client.fetch_map(credentials)
+
+        def success(image: Any) -> None:
+            self._minimap_loading = False
+            self.context.map_image = image
+            vault = getattr(self.context, "profile_vault", None)
+            key = str(
+                getattr(self.context, "active_profile_key", "") or ""
+            ).strip()
+            if vault is not None and key:
+                try:
+                    vault.save_map_image(key, image)
+                except Exception:
+                    pass
+
+            self._minimap_cache_key = None
+            current = self._selected_row()
+            if current is not None:
+                self._render_selected_minimap(current, force=True)
+
+        def error(_exc: Exception) -> None:
+            self._minimap_loading = False
+            self._minimap_load_failed = True
+            self.minimap_hint.configure(
+                text=(
+                    "Current map texture could not be loaded. The coordinate "
+                    "grid still shows the selected shop accurately."
+                )
+            )
+
+        run_in_worker(
+            self,
+            work,
+            success,
+            error,
+        )
 
     def _clear_selection_detail(self) -> None:
         self.selection_title.configure(
@@ -1074,6 +1535,27 @@ class ShopsTab(ctk.CTkFrame):
             text="Double-click a row to copy its grid and coordinates."
         )
         self.copy_button.configure(state="disabled")
+        self._minimap_cache_key = None
+        self._minimap_ctk_image = None
+        if hasattr(self, "minimap_title"):
+            self.minimap_title.configure(text="Item shop minimap")
+            self.minimap_hint.configure(
+                text=(
+                    "Click an offer. Orange is the selected shop; green "
+                    "shows other shops carrying the same item."
+                )
+            )
+            self.minimap_label.configure(
+                image=None,
+                text="Select an item offer to locate its shop.",
+            )
+            self.minimap_shop_list.configure(state="normal")
+            self.minimap_shop_list.delete("1.0", "end")
+            self.minimap_shop_list.insert(
+                "1.0",
+                "Matching shop details appear here.",
+            )
+            self.minimap_shop_list.configure(state="disabled")
 
     def copy_selected_location(self) -> None:
         row = self._selected_row()
@@ -1141,3 +1623,6 @@ class ShopsTab(ctk.CTkFrame):
 
     def on_context_updated(self) -> None:
         self.refresh()
+        row = self._selected_row()
+        if row is not None:
+            self._render_selected_minimap(row)
