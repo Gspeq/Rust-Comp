@@ -68,4 +68,4 @@ Filename: "{app}\{#MyAppExeName}"; Description: "Launch Rust Companion+"; Flags:
 
 [UninstallDelete]
 Type: filesandordirs; Name: "{localappdata}\RustCompanionPlus\Rust Companion+"
-Type: filesandordirs; Name: "{userprofile}\.rust_companion_plus"
+Type: filesandordirs; Name: "{%USERPROFILE}\.rust_companion_plus"

@@ -83,6 +83,14 @@ class WindowsReleaseContractTests(unittest.TestCase):
             r"{localappdata}\RustCompanionPlus\Rust Companion+",
             script,
         )
+        self.assertIn(
+            r"{%USERPROFILE}\.rust_companion_plus",
+            script,
+        )
+        self.assertNotIn(
+            "{userprofile}",
+            script.casefold(),
+        )
         self.assertIn("Uninstall Rust Companion+", script)
 
     def test_builder_uses_local_source_not_a_clone(self) -> None:
