@@ -12,14 +12,16 @@ import customtkinter as ctk
 from rust_companion_plus.catalog import electrical_catalog
 from rust_companion_plus.models import ElectricalSetup, SetupComponent
 from rust_companion_plus.services.electrical import analyze_setup
-from rust_companion_plus.ui.common import ACCENT, DANGER, MUTED, MetricCard
+from rust_companion_plus.ui.common import ACCENT, DANGER, MUTED
 
 
 CANVAS_STATE_KEY = "electrical_canvas_state_v2"
 CANVAS_WIDTH = 2600
 CANVAS_HEIGHT = 1600
-NODE_WIDTH = 210
-NODE_HEIGHT = 98
+NODE_WIDTH = 166
+NODE_HEIGHT = 68
+CONNECTOR_RADIUS = 5
+GRID_SIZE = 32
 NODE_INPUT_X = 0
 NODE_OUTPUT_X = NODE_WIDTH
 DEFAULT_ASSUMPTIONS = {
@@ -92,11 +94,20 @@ def circuit_recommendations(
     connections: list[dict[str, Any]],
     catalog: dict[str, dict[str, Any]],
 ) -> list[str]:
-    """Return topology-only recommendations for the visual circuit."""
+    """Return topology and part-choice recommendations for the visual circuit."""
     if not nodes:
-        return ["Drag electrical equipment from the left palette onto the circuit canvas."]
+        return ["[Info] Drag electrical equipment from the palette onto the circuit canvas."]
 
-    node_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
+    active_nodes = [
+        node
+        for node in nodes
+        if str(node.get("state", "Planned")).casefold() in {"placed", "planned"}
+    ]
+    node_by_id = {
+        str(node.get("id")): node
+        for node in active_nodes
+        if node.get("id")
+    }
     incoming: dict[str, list[str]] = defaultdict(list)
     outgoing: dict[str, list[str]] = defaultdict(list)
     valid_connections: list[tuple[str, str]] = []
@@ -109,45 +120,62 @@ def circuit_recommendations(
             incoming[target].append(source)
             valid_connections.append((source, target))
 
+    def name(node_id: str) -> str:
+        return str(node_by_id[node_id].get("component", "Component"))
+
+    def demand(node_id: str) -> float:
+        node = node_by_id[node_id]
+        row = catalog.get(name(node_id), {})
+        return (
+            float(row.get("power_draw", 0) or 0)
+            * max(1, int(node.get("quantity", 1) or 1))
+        )
+
     source_ids = {
         node_id
         for node_id, node in node_by_id.items()
-        if str(node.get("state", "Planned")).casefold() in {"placed", "planned"}
-        and _node_category(node, catalog) in {"generation", "storage"}
+        if _node_category(node, catalog) in {"generation", "storage"}
+    }
+    generation_ids = {
+        node_id
+        for node_id, node in node_by_id.items()
+        if _node_category(node, catalog) == "generation"
     }
     load_ids = {
         node_id
         for node_id, node in node_by_id.items()
-        if str(node.get("state", "Planned")).casefold() in {"placed", "planned"}
-        and _node_category(node, catalog) == "load"
+        if _node_category(node, catalog) == "load"
+    }
+    root_ids = {
+        node_id for node_id in node_by_id if name(node_id) == "Root Combiner"
     }
 
     recommendations: list[str] = []
 
-    if not valid_connections and len(nodes) > 1:
+    if not valid_connections and len(node_by_id) > 1:
         recommendations.append(
-            "No power paths are wired. Click an output dot, then an input dot, to connect the circuit."
+            "[Fix] No power paths are wired. Click an orange output, then a blue input."
         )
 
     unconnected_loads = [
-        node_by_id[node_id].get("component", "Load")
+        name(node_id)
         for node_id in sorted(load_ids)
         if not incoming[node_id]
     ]
     if unconnected_loads:
-        preview = ", ".join(str(name) for name in unconnected_loads[:4])
+        preview = ", ".join(unconnected_loads[:4])
         suffix = "" if len(unconnected_loads) <= 4 else f" and {len(unconnected_loads) - 4} more"
-        recommendations.append(f"Connect power into: {preview}{suffix}.")
+        recommendations.append(f"[Fix] Connect power into: {preview}{suffix}.")
 
     idle_sources = [
-        node_by_id[node_id].get("component", "Source")
+        name(node_id)
         for node_id in sorted(source_ids)
         if not outgoing[node_id]
     ]
     if idle_sources:
-        preview = ", ".join(str(name) for name in idle_sources[:4])
+        preview = ", ".join(idle_sources[:4])
         suffix = "" if len(idle_sources) <= 4 else f" and {len(idle_sources) - 4} more"
-        recommendations.append(f"These power sources have no output path: {preview}{suffix}.")
+        recommendations.append(f"[Fix] These power sources have no output path: {preview}{suffix}.")
 
     reachable: set[str] = set()
     queue: deque[str] = deque(source_ids)
@@ -159,32 +187,114 @@ def circuit_recommendations(
         queue.extend(outgoing[current])
 
     unreachable_loads = [
-        node_by_id[node_id].get("component", "Load")
+        name(node_id)
         for node_id in sorted(load_ids)
         if node_id not in reachable
     ]
     if source_ids and unreachable_loads:
-        preview = ", ".join(str(name) for name in unreachable_loads[:4])
+        preview = ", ".join(unreachable_loads[:4])
         suffix = "" if len(unreachable_loads) <= 4 else f" and {len(unreachable_loads) - 4} more"
-        recommendations.append(f"No complete source-to-load path reaches: {preview}{suffix}.")
+        recommendations.append(f"[Fix] No complete source-to-load path reaches: {preview}{suffix}.")
 
-    for node_id, targets in outgoing.items():
-        if len(targets) <= 1:
-            continue
-        component = str(node_by_id[node_id].get("component", "Component"))
-        lowered = component.casefold()
-        if not any(token in lowered for token in ("splitter", "branch", "combiner", "switch")):
+    # Rust devices generally accept one power input. Root combiners are the
+    # intentional two-input exception in this simplified canvas.
+    for node_id, sources in incoming.items():
+        allowed_inputs = 2 if name(node_id) == "Root Combiner" else 1
+        if len(sources) > allowed_inputs:
             recommendations.append(
-                f"{component} fans directly into {len(targets)} paths. Add a splitter or electrical branch for a clearer, safer distribution bus."
+                f"[Fix] {name(node_id)} has {len(sources)} incoming paths; "
+                f"use a Root Combiner or separate buses instead of stacking inputs."
             )
             break
 
-    for source, target in valid_connections:
-        target_category = _node_category(node_by_id[target], catalog)
-        source_category = _node_category(node_by_id[source], catalog)
-        if target_category == "generation" and source_category != "generation":
+    for node_id, targets in outgoing.items():
+        component = name(node_id)
+        allowed_outputs = 3 if component == "Splitter" else 2 if component == "Electrical Branch" else 1
+        if len(targets) > allowed_outputs:
             recommendations.append(
-                f"Check the wire into {node_by_id[target].get('component', 'generator')}; generation equipment normally starts a path rather than receiving one."
+                f"[Fix] {component} fans into {len(targets)} paths but this part supports "
+                f"{allowed_outputs}. Add another routing component."
+            )
+            break
+        if len(targets) > 1 and component not in {"Splitter", "Electrical Branch"}:
+            recommendations.append(
+                f"[Fix] {component} directly feeds {len(targets)} paths. "
+                "Insert a Splitter for equal feeds or an Electrical Branch for fixed priority."
+            )
+            break
+
+    # Root combiners should only receive root-capable sources.
+    for root_id in root_ids:
+        bad_inputs = [
+            name(source_id)
+            for source_id in incoming[root_id]
+            if _node_category(node_by_id[source_id], catalog)
+            not in {"generation", "storage"}
+        ]
+        if bad_inputs:
+            recommendations.append(
+                f"[Fix] Root Combiner input should come from generators or batteries, not "
+                f"{', '.join(bad_inputs[:3])}."
+            )
+            break
+        if len(incoming[root_id]) > 2:
+            recommendations.append(
+                "[Fix] A Root Combiner accepts two inputs. Chain additional combiners for larger arrays."
+            )
+            break
+
+    if len(generation_ids) > 1 and not any(len(incoming[root_id]) >= 2 for root_id in root_ids):
+        recommendations.append(
+            "[Optimize] Multiple generators are present. Combine root outputs through chained "
+            "Root Combiners before the battery bus."
+        )
+
+    # A splitter divides evenly among connected outputs. Uneven direct loads
+    # are better served by a configured branch.
+    for node_id in node_by_id:
+        component = name(node_id)
+        targets = outgoing[node_id]
+        target_demands = [demand(target) for target in targets if demand(target) > 0]
+        if component == "Splitter":
+            if len(targets) == 1:
+                recommendations.append(
+                    "[Swap] This Splitter uses only one output; remove it unless it is reserved for expansion."
+                )
+                break
+            if len(target_demands) >= 2:
+                smallest = min(target_demands)
+                largest = max(target_demands)
+                if smallest > 0 and largest > smallest * 1.35:
+                    values = ", ".join(f"{value:.0f} rW" for value in target_demands[:3])
+                    recommendations.append(
+                        f"[Swap] Splitter outputs divide evenly, but its direct loads are {values}. "
+                        "Use an Electrical Branch for unequal allocations."
+                    )
+                    break
+        elif component == "Electrical Branch":
+            if len(target_demands) == 2:
+                smallest = min(target_demands)
+                largest = max(target_demands)
+                if largest - smallest <= max(1.0, largest * 0.15):
+                    recommendations.append(
+                        "[Swap] This Electrical Branch feeds nearly equal direct loads. "
+                        "A Splitter is cleaner when both paths should receive equal power."
+                    )
+                    break
+
+    for source, target in valid_connections:
+        source_category = _node_category(node_by_id[source], catalog)
+        target_category = _node_category(node_by_id[target], catalog)
+        if target_category == "generation":
+            recommendations.append(
+                f"[Fix] Check the wire into {name(target)}; generation equipment starts a path "
+                "rather than receiving normal power."
+            )
+            break
+        if source_category == "load" and outgoing[source]:
+            recommendations.append(
+                f"[Fix] {name(source)} is a load, not a distribution source. Route power through "
+                "a branch, splitter, switch, or battery bus."
             )
             break
 
@@ -205,9 +315,57 @@ def circuit_recommendations(
         return False
 
     if any(has_cycle(node_id) for node_id in node_by_id):
-        recommendations.append("The wiring contains a loop. Rust electrical paths should flow in one direction without cycles.")
+        recommendations.append(
+            "[Fix] The wiring contains a loop. Rust electrical paths should flow in one direction."
+        )
 
     return recommendations
+
+
+class CompactMetricCard(ctk.CTkFrame):
+    """Dense metric card that keeps the circuit workspace visible."""
+
+    def __init__(self, master, title: str):
+        super().__init__(master, corner_radius=9, height=58)
+        self.grid_propagate(False)
+        self.grid_columnconfigure(0, weight=1)
+        self.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(
+            self,
+            text=title,
+            text_color=MUTED,
+            font=ctk.CTkFont(size=10, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=(10, 4), pady=(7, 0))
+
+        self.value_label = ctk.CTkLabel(
+            self,
+            text="—",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            anchor="e",
+        )
+        self.value_label.grid(row=0, column=1, sticky="ew", padx=(4, 10), pady=(5, 0))
+
+        self.detail_label = ctk.CTkLabel(
+            self,
+            text="",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=9),
+            anchor="w",
+        )
+        self.detail_label.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="ew",
+            padx=10,
+            pady=(0, 6),
+        )
+
+    def set(self, value: str, detail: str = "") -> None:
+        self.value_label.configure(text=value)
+        self.detail_label.configure(text=detail)
 
 
 class ElectricalTab(ctk.CTkFrame):
@@ -253,38 +411,40 @@ class ElectricalTab(ctk.CTkFrame):
         ctk.CTkLabel(
             title,
             text="Electrical Circuit Designer",
-            font=ctk.CTkFont(size=28, weight="bold"),
+            font=ctk.CTkFont(size=24, weight="bold"),
             anchor="w",
         ).grid(row=0, column=0, sticky="w")
         ctk.CTkLabel(
             title,
-            text="Drag equipment onto the canvas, move it into place, then wire output dots to input dots.",
+            text="Compact visual planner · drag equipment, then wire orange outputs to blue inputs.",
             text_color=MUTED,
+            font=ctk.CTkFont(size=11),
             anchor="w",
         ).grid(row=1, column=0, sticky="w", pady=(2, 0))
 
-        self.name_entry = ctk.CTkEntry(header, width=210, placeholder_text="Circuit name")
+        self.name_entry = ctk.CTkEntry(header, width=180, height=30, placeholder_text="Circuit name")
         self.name_entry.grid(row=0, column=1, rowspan=2, padx=(8, 5))
         self.name_entry.bind("<KeyRelease>", lambda _event: self._schedule_autosave())
 
-        ctk.CTkButton(header, text="New circuit", width=105, command=self.new_circuit).grid(
+        ctk.CTkButton(header, text="New", width=72, height=30, command=self.new_circuit).grid(
             row=0, column=2, rowspan=2, padx=4
         )
-        ctk.CTkButton(header, text="Auto-layout", width=100, command=self.auto_layout).grid(
+        ctk.CTkButton(header, text="Arrange", width=78, height=30, command=self.auto_layout).grid(
             row=0, column=3, rowspan=2, padx=4
         )
-        ctk.CTkButton(header, text="Clear wires", width=95, command=self.clear_wires).grid(
+        ctk.CTkButton(header, text="Clear wires", width=86, height=30, command=self.clear_wires).grid(
             row=0, column=4, rowspan=2, padx=4
         )
         ctk.CTkButton(
             header,
-            text="Delete selected",
-            width=115,
+            text="Delete",
+            width=72,
+            height=30,
             command=self.delete_selected,
             fg_color=DANGER,
             hover_color="#b91c1c",
         ).grid(row=0, column=5, rowspan=2, padx=4)
-        ctk.CTkButton(header, text="Save", width=78, command=self.save_circuit).grid(
+        ctk.CTkButton(header, text="Save", width=64, height=30, command=self.save_circuit).grid(
             row=0, column=6, rowspan=2, padx=(4, 0)
         )
 
@@ -292,17 +452,17 @@ class ElectricalTab(ctk.CTkFrame):
         metrics = ctk.CTkFrame(self, fg_color="transparent")
         metrics.grid(row=1, column=0, sticky="ew", pady=(0, 8))
         metrics.grid_columnconfigure(tuple(range(6)), weight=1)
-        self.metric_cards: dict[str, MetricCard] = {}
+        self.metric_cards: dict[str, CompactMetricCard] = {}
         definitions = [
             ("load", "Active load"),
             ("generation", "Peak generation"),
-            ("average", "Estimated average"),
+            ("average", "Usable average"),
             ("battery", "Battery storage"),
             ("runtime", "No-gen runtime"),
-            ("headroom", "Peak margin"),
+            ("headroom", "Usable peak margin"),
         ]
         for column, (key, title) in enumerate(definitions):
-            card = MetricCard(metrics, title)
+            card = CompactMetricCard(metrics, title)
             card.grid(row=0, column=column, sticky="nsew", padx=3)
             self.metric_cards[key] = card
 
@@ -310,9 +470,9 @@ class ElectricalTab(ctk.CTkFrame):
         workspace = ctk.CTkFrame(self, corner_radius=12)
         workspace.grid(row=2, column=0, sticky="nsew")
         workspace.grid_rowconfigure(0, weight=1)
-        workspace.grid_columnconfigure(0, minsize=250)
+        workspace.grid_columnconfigure(0, minsize=205)
         workspace.grid_columnconfigure(1, weight=1)
-        workspace.grid_columnconfigure(2, minsize=290)
+        workspace.grid_columnconfigure(2, minsize=250)
 
         self._build_palette(workspace)
         self._build_canvas(workspace)
@@ -320,61 +480,78 @@ class ElectricalTab(ctk.CTkFrame):
 
     def _build_palette(self, parent) -> None:
         palette = ctk.CTkFrame(parent, corner_radius=10)
-        palette.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+        palette.grid(row=0, column=0, sticky="nsew", padx=(8, 4), pady=8)
         palette.grid_columnconfigure(0, weight=1)
         palette.grid_rowconfigure(3, weight=1)
 
+        heading = ctk.CTkFrame(palette, fg_color="transparent")
+        heading.grid(row=0, column=0, sticky="ew", padx=9, pady=(8, 4))
+        heading.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            palette,
+            heading,
             text="Equipment",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            font=ctk.CTkFont(size=16, weight="bold"),
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 2))
+        ).grid(row=0, column=0, sticky="ew")
         ctk.CTkLabel(
-            palette,
-            text="Drag any item into the canvas. Click an item to add it in the center.",
+            heading,
+            text="drag or click to add",
             text_color=MUTED,
-            justify="left",
-            anchor="w",
-            wraplength=220,
-        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+            font=ctk.CTkFont(size=9),
+            anchor="e",
+        ).grid(row=0, column=1, sticky="e")
 
-        self.palette_search = ctk.CTkEntry(palette, placeholder_text="Search equipment…")
-        self.palette_search.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self.palette_search = ctk.CTkEntry(
+            palette,
+            height=28,
+            placeholder_text="Search equipment…",
+        )
+        self.palette_search.grid(row=1, column=0, sticky="ew", padx=9, pady=(0, 5))
         self.palette_search.bind("<KeyRelease>", lambda _event: self._refresh_palette())
 
+        self.palette_filter = ctk.CTkOptionMenu(
+            palette,
+            height=28,
+            values=["All", "Generation", "Storage", "Routing", "Loads"],
+            command=lambda _value: self._refresh_palette(),
+        )
+        self.palette_filter.set("All")
+        self.palette_filter.grid(row=2, column=0, sticky="ew", padx=9, pady=(0, 5))
+
         self.palette_scroll = ctk.CTkScrollableFrame(palette, fg_color="transparent")
-        self.palette_scroll.grid(row=3, column=0, sticky="nsew", padx=5, pady=(0, 8))
+        self.palette_scroll.grid(row=3, column=0, sticky="nsew", padx=3, pady=(0, 5))
         self.palette_scroll.grid_columnconfigure(0, weight=1)
         self._refresh_palette()
 
     def _build_canvas(self, parent) -> None:
         shell = ctk.CTkFrame(parent, corner_radius=10)
-        shell.grid(row=0, column=1, sticky="nsew", padx=5, pady=10)
+        shell.grid(row=0, column=1, sticky="nsew", padx=4, pady=8)
         shell.grid_rowconfigure(1, weight=1)
         shell.grid_columnconfigure(0, weight=1)
 
         toolbar = ctk.CTkFrame(shell, fg_color="transparent")
-        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 4))
+        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=8, pady=(5, 3))
         toolbar.grid_columnconfigure(0, weight=1)
         self.wire_status = ctk.CTkLabel(
             toolbar,
-            text="Wire mode: click a node's right output dot, then another node's left input dot.",
+            text="Wire: orange output → blue input · middle-drag pans · Delete removes selection.",
             text_color=MUTED,
+            font=ctk.CTkFont(size=10),
             anchor="w",
         )
         self.wire_status.grid(row=0, column=0, sticky="ew")
         ctk.CTkButton(
             toolbar,
             text="Cancel wire",
-            width=92,
+            width=78,
+            height=27,
             fg_color="transparent",
             border_width=1,
             command=self.cancel_wire,
         ).grid(row=0, column=1, padx=(8, 0))
 
         canvas_frame = ctk.CTkFrame(shell, fg_color="#09111f", corner_radius=8)
-        canvas_frame.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
+        canvas_frame.grid(row=1, column=0, sticky="nsew", padx=(6, 0), pady=(0, 6))
         canvas_frame.grid_rowconfigure(0, weight=1)
         canvas_frame.grid_columnconfigure(0, weight=1)
 
@@ -390,7 +567,7 @@ class ElectricalTab(ctk.CTkFrame):
         self.vscroll = ctk.CTkScrollbar(canvas_frame, orientation="vertical", command=self.canvas.yview)
         self.vscroll.grid(row=0, column=1, sticky="ns")
         self.hscroll = ctk.CTkScrollbar(shell, orientation="horizontal", command=self.canvas.xview)
-        self.hscroll.grid(row=2, column=0, sticky="ew", padx=(8, 0), pady=(0, 8))
+        self.hscroll.grid(row=2, column=0, sticky="ew", padx=(6, 0), pady=(0, 6))
         self.canvas.configure(yscrollcommand=self.vscroll.set, xscrollcommand=self.hscroll.set)
 
         self.canvas.bind("<Button-1>", self._canvas_blank_click)
@@ -400,113 +577,173 @@ class ElectricalTab(ctk.CTkFrame):
         self.canvas.bind("<B2-Motion>", self._pan_move)
         self.canvas.bind("<MouseWheel>", self._canvas_wheel)
 
-        for x in range(0, CANVAS_WIDTH, 40):
+        for x in range(0, CANVAS_WIDTH, GRID_SIZE):
             self.canvas.create_line(x, 0, x, CANVAS_HEIGHT, fill="#102038", width=1, tags=("grid",))
-        for y in range(0, CANVAS_HEIGHT, 40):
+        for y in range(0, CANVAS_HEIGHT, GRID_SIZE):
             self.canvas.create_line(0, y, CANVAS_WIDTH, y, fill="#102038", width=1, tags=("grid",))
         self.canvas.tag_lower("grid")
 
     def _build_inspector(self, parent) -> None:
         inspector = ctk.CTkFrame(parent, corner_radius=10)
-        inspector.grid(row=0, column=2, sticky="nsew", padx=(5, 10), pady=10)
+        inspector.grid(row=0, column=2, sticky="nsew", padx=(4, 8), pady=8)
         inspector.grid_columnconfigure(0, weight=1)
-        inspector.grid_rowconfigure(8, weight=1)
 
         ctk.CTkLabel(
             inspector,
             text="Selected equipment",
-            font=ctk.CTkFont(size=18, weight="bold"),
+            font=ctk.CTkFont(size=16, weight="bold"),
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 2))
+        ).grid(row=0, column=0, sticky="ew", padx=10, pady=(8, 1))
         self.inspector_title = ctk.CTkLabel(
             inspector,
             text="Nothing selected",
             text_color=MUTED,
+            font=ctk.CTkFont(size=11, weight="bold"),
             anchor="w",
             justify="left",
-            wraplength=255,
+            wraplength=225,
         )
-        self.inspector_title.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self.inspector_title.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 5))
 
         editor = ctk.CTkFrame(inspector, fg_color="transparent")
-        editor.grid(row=2, column=0, sticky="ew", padx=10)
+        editor.grid(row=2, column=0, sticky="ew", padx=8)
         editor.grid_columnconfigure(1, weight=1)
 
-        ctk.CTkLabel(editor, text="Quantity", text_color=MUTED).grid(row=0, column=0, sticky="w", padx=2, pady=3)
-        self.quantity_entry = ctk.CTkEntry(editor)
-        self.quantity_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=3)
-
-        ctk.CTkLabel(editor, text="State", text_color=MUTED).grid(row=1, column=0, sticky="w", padx=2, pady=3)
-        self.state_menu = ctk.CTkOptionMenu(editor, values=self.STATES)
-        self.state_menu.grid(row=1, column=1, sticky="ew", padx=2, pady=3)
-
-        ctk.CTkLabel(editor, text="Zone", text_color=MUTED).grid(row=2, column=0, sticky="w", padx=2, pady=3)
-        self.zone_menu = ctk.CTkOptionMenu(editor, values=self.ZONES)
-        self.zone_menu.grid(row=2, column=1, sticky="ew", padx=2, pady=3)
-
-        ctk.CTkButton(editor, text="Apply changes", command=self.apply_inspector_changes).grid(
-            row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(6, 3)
+        ctk.CTkLabel(editor, text="Qty", text_color=MUTED, font=ctk.CTkFont(size=10)).grid(
+            row=0, column=0, sticky="w", padx=2, pady=2
         )
+        self.quantity_entry = ctk.CTkEntry(editor, height=27)
+        self.quantity_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+
+        ctk.CTkLabel(editor, text="State", text_color=MUTED, font=ctk.CTkFont(size=10)).grid(
+            row=1, column=0, sticky="w", padx=2, pady=2
+        )
+        self.state_menu = ctk.CTkOptionMenu(editor, values=self.STATES, height=27)
+        self.state_menu.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+
+        ctk.CTkLabel(editor, text="Zone", text_color=MUTED, font=ctk.CTkFont(size=10)).grid(
+            row=2, column=0, sticky="w", padx=2, pady=2
+        )
+        self.zone_menu = ctk.CTkOptionMenu(editor, values=self.ZONES, height=27)
+        self.zone_menu.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+
+        ctk.CTkButton(
+            editor,
+            text="Apply",
+            height=27,
+            command=self.apply_inspector_changes,
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(4, 2))
 
         ctk.CTkLabel(
             inspector,
-            text="Electrical information",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            text="Verified electrical values",
+            font=ctk.CTkFont(size=12, weight="bold"),
             anchor="w",
-        ).grid(row=3, column=0, sticky="ew", padx=12, pady=(10, 3))
-        self.spec_box = ctk.CTkTextbox(inspector, height=145)
-        self.spec_box.grid(row=4, column=0, sticky="ew", padx=12)
+        ).grid(row=3, column=0, sticky="ew", padx=10, pady=(7, 2))
+        self.spec_box = ctk.CTkTextbox(inspector, height=104, font=ctk.CTkFont(size=10))
+        self.spec_box.grid(row=4, column=0, sticky="ew", padx=10)
 
         ctk.CTkLabel(
             inspector,
-            text="Connected path",
-            font=ctk.CTkFont(size=14, weight="bold"),
+            text="Connected paths",
+            font=ctk.CTkFont(size=12, weight="bold"),
             anchor="w",
-        ).grid(row=5, column=0, sticky="ew", padx=12, pady=(10, 3))
-        self.path_box = ctk.CTkTextbox(inspector, height=105)
-        self.path_box.grid(row=6, column=0, sticky="ew", padx=12)
+        ).grid(row=5, column=0, sticky="ew", padx=10, pady=(7, 2))
+        self.path_box = ctk.CTkTextbox(inspector, height=72, font=ctk.CTkFont(size=10))
+        self.path_box.grid(row=6, column=0, sticky="ew", padx=10)
 
         assumptions = ctk.CTkFrame(inspector, fg_color="transparent")
-        assumptions.grid(row=7, column=0, sticky="ew", padx=10, pady=(10, 4))
+        assumptions.grid(row=7, column=0, sticky="ew", padx=8, pady=(7, 3))
         assumptions.grid_columnconfigure(1, weight=1)
-        ctk.CTkLabel(assumptions, text="Solar average %", text_color=MUTED).grid(row=0, column=0, sticky="w", padx=2, pady=2)
-        self.solar_entry = ctk.CTkEntry(assumptions)
-        self.solar_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
-        ctk.CTkLabel(assumptions, text="Wind average %", text_color=MUTED).grid(row=1, column=0, sticky="w", padx=2, pady=2)
-        self.wind_entry = ctk.CTkEntry(assumptions)
-        self.wind_entry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
-        ctk.CTkLabel(assumptions, text="Battery charge %", text_color=MUTED).grid(row=2, column=0, sticky="w", padx=2, pady=2)
-        self.charge_entry = ctk.CTkEntry(assumptions)
-        self.charge_entry.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
-        ctk.CTkButton(assumptions, text="Recalculate assumptions", command=self.apply_assumptions).grid(
-            row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(5, 2)
-        )
 
-        self._set_textbox(self.spec_box, "Select a component to see its complete electrical values.")
+        labels = (
+            ("Solar avg %", "solar_entry"),
+            ("Wind avg %", "wind_entry"),
+            ("Battery charge %", "charge_entry"),
+        )
+        for row_index, (label, attribute) in enumerate(labels):
+            ctk.CTkLabel(
+                assumptions,
+                text=label,
+                text_color=MUTED,
+                font=ctk.CTkFont(size=9),
+            ).grid(row=row_index, column=0, sticky="w", padx=2, pady=1)
+            entry = ctk.CTkEntry(assumptions, height=25)
+            entry.grid(row=row_index, column=1, sticky="ew", padx=2, pady=1)
+            setattr(self, attribute, entry)
+
+        ctk.CTkButton(
+            assumptions,
+            text="Apply assumptions",
+            height=26,
+            command=self.apply_assumptions,
+        ).grid(row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(4, 1))
+
+        self.math_model_label = ctk.CTkLabel(
+            inspector,
+            text="Battery-bus model: generation × charge efficiency − live load",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=9),
+            anchor="w",
+            justify="left",
+            wraplength=225,
+        )
+        self.math_model_label.grid(row=8, column=0, sticky="ew", padx=10, pady=(4, 8))
+
+        self._set_textbox(self.spec_box, "Select a component to see its verified electrical values.")
         self._set_textbox(self.path_box, "Select a component to see incoming and outgoing paths.")
 
     def _build_recommendations(self) -> None:
-        panel = ctk.CTkFrame(self, corner_radius=12)
-        panel.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        panel = ctk.CTkFrame(self, corner_radius=10)
+        panel.grid(row=3, column=0, sticky="ew", pady=(6, 0))
         panel.grid_columnconfigure(0, weight=1)
+
+        heading = ctk.CTkFrame(panel, fg_color="transparent")
+        heading.grid(row=0, column=0, sticky="ew", padx=11, pady=(7, 2))
+        heading.grid_columnconfigure(0, weight=1)
         ctk.CTkLabel(
-            panel,
+            heading,
             text="Suggested changes",
-            font=ctk.CTkFont(size=17, weight="bold"),
+            font=ctk.CTkFont(size=15, weight="bold"),
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 2))
-        self.recommendation_box = ctk.CTkTextbox(panel, height=150)
-        self.recommendation_box.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+        ).grid(row=0, column=0, sticky="ew")
+        self.recommendation_status = ctk.CTkLabel(
+            heading,
+            text="0 checks",
+            text_color=MUTED,
+            font=ctk.CTkFont(size=9, weight="bold"),
+            anchor="e",
+        )
+        self.recommendation_status.grid(row=0, column=1, sticky="e")
+
+        self.recommendation_box = ctk.CTkTextbox(
+            panel,
+            height=104,
+            font=ctk.CTkFont(size=10),
+        )
+        self.recommendation_box.grid(row=1, column=0, sticky="ew", padx=10, pady=(0, 8))
 
     def _refresh_palette(self) -> None:
         for child in self.palette_scroll.winfo_children():
             child.destroy()
 
         query = self.palette_search.get().strip().casefold() if hasattr(self, "palette_search") else ""
+        selected_filter = self.palette_filter.get() if hasattr(self, "palette_filter") else "All"
+        filter_categories = {
+            "Generation": {"generation"},
+            "Storage": {"storage"},
+            "Routing": {"control", "logic", "utility"},
+            "Loads": {"load"},
+        }
+        allowed = filter_categories.get(selected_filter)
+
         rows = []
         for name, row in self.catalog.items():
+            category = str(row.get("category", "utility")).lower()
+            if allowed is not None and category not in allowed:
+                continue
             searchable = " ".join(
-                [name, str(row.get("category", "")), " ".join(str(alias) for alias in row.get("aliases", []))]
+                [name, category, " ".join(str(alias) for alias in row.get("aliases", []))]
             ).casefold()
             if query and query not in searchable:
                 continue
@@ -529,30 +766,33 @@ class ElectricalTab(ctk.CTkFrame):
                     self.palette_scroll,
                     text=label,
                     text_color=MUTED,
-                    font=ctk.CTkFont(size=11, weight="bold"),
+                    font=ctk.CTkFont(size=9, weight="bold"),
                     anchor="w",
-                ).grid(row=grid_row, column=0, sticky="ew", padx=7, pady=(8, 2))
+                ).grid(row=grid_row, column=0, sticky="ew", padx=6, pady=(5, 1))
                 grid_row += 1
                 current_label = label
 
-            text = f"{name}\n{self._component_brief(row)}"
             button = ctk.CTkButton(
                 self.palette_scroll,
-                text=text,
+                text=name,
                 anchor="w",
-                height=48,
+                height=30,
+                font=ctk.CTkFont(size=10),
                 fg_color="#172033",
                 hover_color="#24324a",
             )
-            button.grid(row=grid_row, column=0, sticky="ew", padx=4, pady=2)
+            button.grid(row=grid_row, column=0, sticky="ew", padx=3, pady=1)
             button.bind("<ButtonPress-1>", lambda event, component=name: self._palette_press(event, component))
             button.bind("<ButtonRelease-1>", lambda event, component=name: self._palette_release(event, component))
             grid_row += 1
 
         if not rows:
-            ctk.CTkLabel(self.palette_scroll, text="No equipment matches that search.", text_color=MUTED).grid(
-                row=0, column=0, sticky="ew", padx=8, pady=12
-            )
+            ctk.CTkLabel(
+                self.palette_scroll,
+                text="No matching equipment.",
+                text_color=MUTED,
+                font=ctk.CTkFont(size=10),
+            ).grid(row=0, column=0, sticky="ew", padx=7, pady=10)
 
     @staticmethod
     def _component_brief(row: dict[str, Any]) -> str:
@@ -618,6 +858,7 @@ class ElectricalTab(ctk.CTkFrame):
         row = self.catalog.get(str(node.get("component", "")), {})
         category = str(row.get("category", "utility")).lower()
         fill = CATEGORY_COLORS.get(category, "#374151")
+        r = CONNECTOR_RADIUS
 
         body = self.canvas.create_rectangle(
             x,
@@ -630,43 +871,43 @@ class ElectricalTab(ctk.CTkFrame):
             tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
         )
         title = self.canvas.create_text(
-            x + 14,
-            y + 15,
+            x + 9,
+            y + 8,
             text=str(node.get("component", "Component")),
             fill="#f8fafc",
-            font=("Segoe UI", 11, "bold"),
+            font=("Segoe UI", 9, "bold"),
             anchor="nw",
-            width=NODE_WIDTH - 28,
+            width=NODE_WIDTH - 18,
             tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
         )
         detail = self.canvas.create_text(
-            x + 14,
-            y + 50,
+            x + 9,
+            y + 32,
             text=self._node_detail(node),
             fill="#cbd5e1",
-            font=("Segoe UI", 9),
+            font=("Segoe UI", 8),
             anchor="nw",
-            width=NODE_WIDTH - 28,
+            width=NODE_WIDTH - 18,
             tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
         )
         input_dot = self.canvas.create_oval(
-            x - 7,
-            y + NODE_HEIGHT / 2 - 7,
-            x + 7,
-            y + NODE_HEIGHT / 2 + 7,
+            x - r,
+            y + NODE_HEIGHT / 2 - r,
+            x + r,
+            y + NODE_HEIGHT / 2 + r,
             fill="#38bdf8",
             outline="#e0f2fe",
-            width=2,
+            width=1,
             tags=("connector", "input", f"input:{node_id}"),
         )
         output_dot = self.canvas.create_oval(
-            x + NODE_WIDTH - 7,
-            y + NODE_HEIGHT / 2 - 7,
-            x + NODE_WIDTH + 7,
-            y + NODE_HEIGHT / 2 + 7,
+            x + NODE_WIDTH - r,
+            y + NODE_HEIGHT / 2 - r,
+            x + NODE_WIDTH + r,
+            y + NODE_HEIGHT / 2 + r,
             fill="#f59e0b",
             outline="#fffbeb",
-            width=2,
+            width=1,
             tags=("connector", "output", f"output:{node_id}"),
         )
         self.node_items[node_id] = {
@@ -687,7 +928,8 @@ class ElectricalTab(ctk.CTkFrame):
     def _node_detail(self, node: dict[str, Any]) -> str:
         row = self.catalog.get(str(node.get("component", "")), {})
         brief = self._component_brief(row)
-        return f"x{max(1, int(node.get('quantity', 1) or 1))} · {brief}\n{node.get('state', 'Planned')} · {node.get('zone', 'Main')}"
+        quantity = max(1, int(node.get("quantity", 1) or 1))
+        return f"x{quantity} · {brief}\n{node.get('state', 'Planned')} / {node.get('zone', 'Main')}"
 
     def _node_press(self, event, node_id: str) -> None:
         self.canvas.focus_set()
@@ -725,16 +967,23 @@ class ElectricalTab(ctk.CTkFrame):
             return
         x = float(node.get("x", 0))
         y = float(node.get("y", 0))
+        r = CONNECTOR_RADIUS
         self.canvas.coords(items["body"], x, y, x + NODE_WIDTH, y + NODE_HEIGHT)
-        self.canvas.coords(items["title"], x + 14, y + 15)
-        self.canvas.coords(items["detail"], x + 14, y + 50)
-        self.canvas.coords(items["input"], x - 7, y + NODE_HEIGHT / 2 - 7, x + 7, y + NODE_HEIGHT / 2 + 7)
+        self.canvas.coords(items["title"], x + 9, y + 8)
+        self.canvas.coords(items["detail"], x + 9, y + 32)
+        self.canvas.coords(
+            items["input"],
+            x - r,
+            y + NODE_HEIGHT / 2 - r,
+            x + r,
+            y + NODE_HEIGHT / 2 + r,
+        )
         self.canvas.coords(
             items["output"],
-            x + NODE_WIDTH - 7,
-            y + NODE_HEIGHT / 2 - 7,
-            x + NODE_WIDTH + 7,
-            y + NODE_HEIGHT / 2 + 7,
+            x + NODE_WIDTH - r,
+            y + NODE_HEIGHT / 2 - r,
+            x + NODE_WIDTH + r,
+            y + NODE_HEIGHT / 2 + r,
         )
 
     def _output_clicked(self, event, node_id: str) -> None:
@@ -888,7 +1137,7 @@ class ElectricalTab(ctk.CTkFrame):
             self._replace_entry(self.quantity_entry, "1")
             self.state_menu.set("Planned")
             self.zone_menu.set("Main")
-            self._set_textbox(self.spec_box, "Select a component to see its complete electrical values.")
+            self._set_textbox(self.spec_box, "Select a component to see its verified electrical values.")
             self._set_textbox(self.path_box, "Select a component to see incoming and outgoing paths.")
             return
 
@@ -1042,39 +1291,89 @@ class ElectricalTab(ctk.CTkFrame):
         columns = sorted(grouped)
         for display_column, category_column in enumerate(columns):
             for row_index, node in enumerate(grouped[category_column]):
-                node["x"] = 90 + display_column * 330
-                node["y"] = 80 + row_index * 135
+                node["x"] = 70 + display_column * 240
+                node["y"] = 65 + row_index * 92
         self._redraw_all()
         self.recalculate()
         self._schedule_autosave()
 
     def recalculate(self) -> None:
-        setup = setup_from_canvas(self.name_entry.get().strip() or "Main Base", self.nodes, self.assumptions)
+        setup = setup_from_canvas(
+            self.name_entry.get().strip() or "Main Base",
+            self.nodes,
+            self.assumptions,
+        )
         analysis = analyze_setup(setup)
-        self.metric_cards["load"].set(f"{analysis.load_rw:.0f} rW", f"{len(self.nodes)} placed nodes")
+
+        active_count = sum(
+            max(1, int(node.get("quantity", 1) or 1))
+            for node in self.nodes
+            if str(node.get("state", "Planned")).casefold() in {"placed", "planned"}
+        )
+        usable_average = float(
+            getattr(analysis, "usable_generation_rw", analysis.estimated_generation_rw)
+        )
+        battery_efficiency = float(
+            getattr(analysis, "battery_charge_efficiency", 1.0)
+        )
+        estimated_runtime = float(
+            getattr(
+                analysis,
+                "estimated_runtime_minutes",
+                analysis.no_generation_runtime_minutes,
+            )
+        )
+
+        self.metric_cards["load"].set(
+            f"{analysis.load_rw:.0f} rW",
+            f"{active_count} active item{'s' if active_count != 1 else ''}",
+        )
         self.metric_cards["generation"].set(
             f"{analysis.peak_generation_rw:.0f} rW",
-            f"{analysis.utilization_percent:.0f}% peak use",
+            f"{analysis.utilization_percent:.0f}% usable peak use",
         )
         self.metric_cards["average"].set(
-            f"{analysis.estimated_generation_rw:.0f} rW",
-            "Solar/wind estimate",
+            f"{usable_average:.0f} rW",
+            (
+                f"after {battery_efficiency * 100:.0f}% battery input efficiency"
+                if analysis.battery_capacity_rwm > 0
+                else "direct average generation"
+            ),
         )
         self.metric_cards["battery"].set(
             f"{analysis.battery_capacity_rwm:.0f} rWm",
-            f"{analysis.battery_output_limit_rw:.0f} rW output",
+            f"{analysis.battery_output_limit_rw:.0f} rW combined output",
+        )
+        runtime_detail = (
+            f"with average input: {self._format_runtime(estimated_runtime)}"
+            if not math.isinf(estimated_runtime)
+            else "average input sustains the load"
         )
         self.metric_cards["runtime"].set(
             self._format_runtime(analysis.no_generation_runtime_minutes),
-            "At selected charge",
+            runtime_detail,
         )
         self.metric_cards["headroom"].set(
             f"{analysis.peak_headroom_rw:+.0f} rW",
-            f"Charge target {analysis.required_peak_for_charging_rw:.0f} rW",
+            f"raw input target {analysis.required_peak_for_charging_rw:.0f} rW",
+        )
+
+        self.math_model_label.configure(
+            text=(
+                "Battery-bus model: "
+                f"{analysis.estimated_generation_rw:.0f} rW raw average × "
+                f"{battery_efficiency * 100:.0f}% − {analysis.load_rw:.0f} rW load"
+            )
         )
 
         suggestions = list(analysis.recommendations)
-        suggestions.extend(circuit_recommendations(self.nodes, self.connections, self.catalog))
+        suggestions.extend(
+            circuit_recommendations(
+                self.nodes,
+                self.connections,
+                self.catalog,
+            )
+        )
         unique: list[str] = []
         seen: set[str] = set()
         for suggestion in suggestions:
@@ -1082,11 +1381,35 @@ class ElectricalTab(ctk.CTkFrame):
             if normalized and normalized not in seen:
                 seen.add(normalized)
                 unique.append(normalized)
+
+        priority = {
+            "[Fix]": 0,
+            "[Swap]": 1,
+            "[Optimize]": 2,
+            "[Info]": 3,
+        }
+        unique.sort(
+            key=lambda suggestion: next(
+                (
+                    rank
+                    for prefix, rank in priority.items()
+                    if suggestion.startswith(prefix)
+                ),
+                4,
+            )
+        )
         if not unique:
-            unique = ["The circuit has no obvious power-balance or wiring-path issue."]
+            unique = ["[Info] The circuit has no obvious power-balance or wiring-path issue."]
+
+        self.recommendation_status.configure(
+            text=f"{len(unique)} recommendation{'s' if len(unique) != 1 else ''}"
+        )
         self._set_textbox(
             self.recommendation_box,
-            "\n".join(f"{index}. {suggestion}" for index, suggestion in enumerate(unique, start=1)),
+            "\n".join(
+                f"{index}. {suggestion}"
+                for index, suggestion in enumerate(unique, start=1)
+            ),
         )
         if self.selected_node_id:
             self._refresh_inspector()
@@ -1171,8 +1494,8 @@ class ElectricalTab(ctk.CTkFrame):
                     "state": item.state,
                     "zone": item.zone,
                     "note": item.note,
-                    "x": 90 + (index % 4) * 300,
-                    "y": 80 + (index // 4) * 130,
+                    "x": 70 + (index % 5) * 225,
+                    "y": 65 + (index // 5) * 92,
                 }
             )
 
@@ -1191,8 +1514,8 @@ class ElectricalTab(ctk.CTkFrame):
             node["quantity"] = max(1, int(node.get("quantity", 1) or 1))
             node["state"] = str(node.get("state", "Planned") or "Planned")
             node["zone"] = str(node.get("zone", "Main") or "Main")
-            node["x"] = float(node.get("x", 90 + (index % 4) * 300))
-            node["y"] = float(node.get("y", 80 + (index // 4) * 130))
+            node["x"] = float(node.get("x", 70 + (index % 5) * 225))
+            node["y"] = float(node.get("y", 65 + (index // 5) * 92))
             valid_ids.add(node_id)
             normalized_nodes.append(node)
         self.nodes = normalized_nodes

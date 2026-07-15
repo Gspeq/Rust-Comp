@@ -46,7 +46,7 @@
   {
     "name": "Fluorescent Light",
     "category": "load",
-    "power_draw": 2,
+    "power_draw": 1,
     "max_output": 0,
     "capacity_rwm": 0,
     "output_limit": 0,
@@ -221,7 +221,7 @@
   {
     "name": "Smart Switch",
     "category": "load",
-    "power_draw": 1,
+    "power_draw": 0,
     "max_output": 0,
     "capacity_rwm": 0,
     "output_limit": 0,
@@ -234,7 +234,7 @@
   {
     "name": "Electrical Branch",
     "category": "logic",
-    "power_draw": 1,
+    "power_draw": 0,
     "max_output": 0,
     "capacity_rwm": 0,
     "output_limit": 0,
