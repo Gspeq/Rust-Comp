@@ -26,6 +26,9 @@ from rust_companion_plus.ui.common import (
 
 
 NO_HEATMAP = "No heatmap"
+# MAP_ICON_HOTFIX_V1
+HEATMAP_OPACITY = 1.0
+HEATMAP_BLUR_RADIUS = 16
 
 
 class MapTab(ctk.CTkFrame):
@@ -40,6 +43,9 @@ class MapTab(ctk.CTkFrame):
 
         self.ctk_image = None
         self.current_source_path = ""
+        self.map_image_with_icons = None
+        self.map_image_clean = None
+        self.show_server_icons = ctk.BooleanVar(value=False)
         self.active_layer = ctk.StringVar(
             value=NO_HEATMAP
         )
@@ -289,67 +295,46 @@ class MapTab(ctk.CTkFrame):
             pady=(3, 10),
         )
 
-        controls = ctk.CTkFrame(
+        icon_controls = ctk.CTkFrame(
             side,
             fg_color="transparent",
         )
-        controls.grid(
+        icon_controls.grid(
             row=5,
             column=0,
             sticky="ew",
             padx=14,
             pady=2,
         )
-        controls.grid_columnconfigure(1, weight=1)
+        icon_controls.grid_columnconfigure(0, weight=1)
 
-        ctk.CTkLabel(
-            controls,
-            text="Opacity",
-            text_color=MUTED,
-        ).grid(
+        self.icon_switch = ctk.CTkSwitch(
+            icon_controls,
+            text="Show server icons",
+            variable=self.show_server_icons,
+            command=self.render_map,
+        )
+        self.icon_switch.grid(
             row=0,
             column=0,
             sticky="w",
-            padx=(0, 8),
         )
-        self.opacity_slider = ctk.CTkSlider(
-            controls,
-            from_=0.15,
-            to=0.95,
-            number_of_steps=16,
-            command=lambda _value: self.render_map(),
-        )
-        self.opacity_slider.set(0.66)
-        self.opacity_slider.grid(
-            row=0,
-            column=1,
-            sticky="ew",
-        )
-
         ctk.CTkLabel(
-            controls,
-            text="Smoothing",
+            icon_controls,
+            text=(
+                "Off uses the cleaned analyzed map texture when "
+                "available. Heatmap opacity is fixed at maximum "
+                "with balanced smoothing."
+            ),
             text_color=MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=310,
         ).grid(
             row=1,
             column=0,
-            sticky="w",
-            padx=(0, 8),
-            pady=(10, 0),
-        )
-        self.blur_slider = ctk.CTkSlider(
-            controls,
-            from_=0,
-            to=50,
-            number_of_steps=25,
-            command=lambda _value: self.render_map(),
-        )
-        self.blur_slider.set(20)
-        self.blur_slider.grid(
-            row=1,
-            column=1,
             sticky="ew",
-            pady=(10, 0),
+            pady=(5, 0),
         )
 
         actions = ctk.CTkFrame(
@@ -586,6 +571,13 @@ class MapTab(ctk.CTkFrame):
         def success(payload) -> None:
             image, result, bundle = payload
             self.context.map_image = image
+            self.map_image_with_icons = image.copy()
+            self.map_image_clean = self._load_clean_map_texture(
+                result.source_dir
+            )
+            if self.map_image_clean is None:
+                self.map_image_clean = image.copy()
+            self.show_server_icons.set(False)
             self.context.heatmap_bundle = bundle
             self.current_source_path = str(
                 result.source_dir
@@ -753,6 +745,9 @@ class MapTab(ctk.CTkFrame):
             self.current_source_path = str(source)
             self.context.heatmap_bundle = bundle
             self.context.map_image = image
+            self.map_image_with_icons = None
+            self.map_image_clean = image.copy()
+            self.show_server_icons.set(False)
             self._set_profile_asset(
                 "parsed_map_dir",
                 str(source),
@@ -847,8 +842,31 @@ class MapTab(ctk.CTkFrame):
         self.render_map()
         self.refresh_hotspots()
 
+    def _load_clean_map_texture(
+        self,
+        source: str | Path,
+    ) -> Image.Image | None:
+        clean_path = Path(source) / "current_map_texture.png"
+        if not clean_path.is_file():
+            return None
+        try:
+            with Image.open(clean_path) as loaded:
+                return loaded.convert("RGBA").copy()
+        except Exception:
+            return None
+
+    def _base_map_for_render(self) -> Image.Image | None:
+        if (
+            self.show_server_icons.get()
+            and self.map_image_with_icons is not None
+        ):
+            return self.map_image_with_icons
+        if self.map_image_clean is not None:
+            return self.map_image_clean
+        return self.context.map_image
+
     def render_map(self) -> None:
-        image = self.context.map_image
+        image = self._base_map_for_render()
         if image is None:
             return
 
@@ -862,13 +880,9 @@ class MapTab(ctk.CTkFrame):
             image,
             self.context.heatmap_bundle,
             selected,
-            opacity=float(
-                self.opacity_slider.get()
-            ),
+            opacity=HEATMAP_OPACITY,
             point_radius=18,
-            blur_radius=int(
-                self.blur_slider.get()
-            ),
+            blur_radius=HEATMAP_BLUR_RADIUS,
         )
 
         available_width = max(
@@ -968,6 +982,11 @@ class MapTab(ctk.CTkFrame):
 
     def on_context_updated(self) -> None:
         # Data refreshes never auto-enable a heatmap.
+        if (
+            self.map_image_clean is None
+            and self.context.map_image is not None
+        ):
+            self.map_image_clean = self.context.map_image.copy()
         if (
             self.context.map_image is not None
             and self.map_label.cget("text")

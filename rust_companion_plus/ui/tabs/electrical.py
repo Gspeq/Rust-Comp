@@ -1,20 +1,213 @@
 from __future__ import annotations
 
 import math
-from copy import deepcopy
-from tkinter import messagebox, ttk
+import tkinter as tk
+from collections import defaultdict, deque
+from tkinter import messagebox
+from typing import Any
+from uuid import uuid4
 
 import customtkinter as ctk
 
 from rust_companion_plus.catalog import electrical_catalog
-from rust_companion_plus.models import ElectricalSetup, SetupComponent, utc_now_iso
-from rust_companion_plus.services.electrical import (
-    analyze_setup,
-    compare_setups,
-    merge_parsed_components,
-    parse_component_text,
-)
-from rust_companion_plus.ui.common import MetricCard, SectionCard, safe_float, safe_int
+from rust_companion_plus.models import ElectricalSetup, SetupComponent
+from rust_companion_plus.services.electrical import analyze_setup
+from rust_companion_plus.ui.common import ACCENT, DANGER, MUTED, MetricCard
+
+
+CANVAS_STATE_KEY = "electrical_canvas_state_v2"
+CANVAS_WIDTH = 2600
+CANVAS_HEIGHT = 1600
+NODE_WIDTH = 210
+NODE_HEIGHT = 98
+NODE_INPUT_X = 0
+NODE_OUTPUT_X = NODE_WIDTH
+DEFAULT_ASSUMPTIONS = {
+    "solar_utilization": 0.35,
+    "wind_utilization": 0.55,
+    "battery_charge_fraction": 1.0,
+}
+
+CATEGORY_ORDER = {
+    "generation": 0,
+    "storage": 1,
+    "control": 2,
+    "logic": 2,
+    "utility": 2,
+    "load": 3,
+}
+
+CATEGORY_LABELS = {
+    "generation": "GENERATION",
+    "storage": "STORAGE",
+    "control": "CONTROL / ROUTING",
+    "logic": "CONTROL / ROUTING",
+    "utility": "CONTROL / ROUTING",
+    "load": "LOADS",
+}
+
+CATEGORY_COLORS = {
+    "generation": "#14532d",
+    "storage": "#1e3a8a",
+    "control": "#4c1d95",
+    "logic": "#4c1d95",
+    "utility": "#374151",
+    "load": "#7c2d12",
+}
+
+
+
+def _node_category(node: dict[str, Any], catalog: dict[str, dict[str, Any]]) -> str:
+    row = catalog.get(str(node.get("component", "")), {})
+    return str(row.get("category", "utility") or "utility").lower()
+
+
+
+def setup_from_canvas(
+    name: str,
+    nodes: list[dict[str, Any]],
+    assumptions: dict[str, float] | None = None,
+) -> ElectricalSetup:
+    """Build the existing analyzer model from visual-canvas nodes."""
+    setup = ElectricalSetup(name=name or "Main Base")
+    setup.assumptions = dict(DEFAULT_ASSUMPTIONS)
+    setup.assumptions.update(assumptions or {})
+    setup.components = [
+        SetupComponent(
+            component=str(node.get("component", "")),
+            quantity=max(1, int(node.get("quantity", 1) or 1)),
+            state=str(node.get("state", "Planned") or "Planned"),
+            zone=str(node.get("zone", "Main") or "Main"),
+            note=str(node.get("note", "") or ""),
+        )
+        for node in nodes
+        if str(node.get("component", ""))
+    ]
+    return setup
+
+
+
+def circuit_recommendations(
+    nodes: list[dict[str, Any]],
+    connections: list[dict[str, Any]],
+    catalog: dict[str, dict[str, Any]],
+) -> list[str]:
+    """Return topology-only recommendations for the visual circuit."""
+    if not nodes:
+        return ["Drag electrical equipment from the left palette onto the circuit canvas."]
+
+    node_by_id = {str(node.get("id")): node for node in nodes if node.get("id")}
+    incoming: dict[str, list[str]] = defaultdict(list)
+    outgoing: dict[str, list[str]] = defaultdict(list)
+    valid_connections: list[tuple[str, str]] = []
+
+    for connection in connections:
+        source = str(connection.get("source", ""))
+        target = str(connection.get("target", ""))
+        if source in node_by_id and target in node_by_id and source != target:
+            outgoing[source].append(target)
+            incoming[target].append(source)
+            valid_connections.append((source, target))
+
+    source_ids = {
+        node_id
+        for node_id, node in node_by_id.items()
+        if str(node.get("state", "Planned")).casefold() in {"placed", "planned"}
+        and _node_category(node, catalog) in {"generation", "storage"}
+    }
+    load_ids = {
+        node_id
+        for node_id, node in node_by_id.items()
+        if str(node.get("state", "Planned")).casefold() in {"placed", "planned"}
+        and _node_category(node, catalog) == "load"
+    }
+
+    recommendations: list[str] = []
+
+    if not valid_connections and len(nodes) > 1:
+        recommendations.append(
+            "No power paths are wired. Click an output dot, then an input dot, to connect the circuit."
+        )
+
+    unconnected_loads = [
+        node_by_id[node_id].get("component", "Load")
+        for node_id in sorted(load_ids)
+        if not incoming[node_id]
+    ]
+    if unconnected_loads:
+        preview = ", ".join(str(name) for name in unconnected_loads[:4])
+        suffix = "" if len(unconnected_loads) <= 4 else f" and {len(unconnected_loads) - 4} more"
+        recommendations.append(f"Connect power into: {preview}{suffix}.")
+
+    idle_sources = [
+        node_by_id[node_id].get("component", "Source")
+        for node_id in sorted(source_ids)
+        if not outgoing[node_id]
+    ]
+    if idle_sources:
+        preview = ", ".join(str(name) for name in idle_sources[:4])
+        suffix = "" if len(idle_sources) <= 4 else f" and {len(idle_sources) - 4} more"
+        recommendations.append(f"These power sources have no output path: {preview}{suffix}.")
+
+    reachable: set[str] = set()
+    queue: deque[str] = deque(source_ids)
+    while queue:
+        current = queue.popleft()
+        if current in reachable:
+            continue
+        reachable.add(current)
+        queue.extend(outgoing[current])
+
+    unreachable_loads = [
+        node_by_id[node_id].get("component", "Load")
+        for node_id in sorted(load_ids)
+        if node_id not in reachable
+    ]
+    if source_ids and unreachable_loads:
+        preview = ", ".join(str(name) for name in unreachable_loads[:4])
+        suffix = "" if len(unreachable_loads) <= 4 else f" and {len(unreachable_loads) - 4} more"
+        recommendations.append(f"No complete source-to-load path reaches: {preview}{suffix}.")
+
+    for node_id, targets in outgoing.items():
+        if len(targets) <= 1:
+            continue
+        component = str(node_by_id[node_id].get("component", "Component"))
+        lowered = component.casefold()
+        if not any(token in lowered for token in ("splitter", "branch", "combiner", "switch")):
+            recommendations.append(
+                f"{component} fans directly into {len(targets)} paths. Add a splitter or electrical branch for a clearer, safer distribution bus."
+            )
+            break
+
+    for source, target in valid_connections:
+        target_category = _node_category(node_by_id[target], catalog)
+        source_category = _node_category(node_by_id[source], catalog)
+        if target_category == "generation" and source_category != "generation":
+            recommendations.append(
+                f"Check the wire into {node_by_id[target].get('component', 'generator')}; generation equipment normally starts a path rather than receiving one."
+            )
+            break
+
+    visiting: set[str] = set()
+    visited: set[str] = set()
+
+    def has_cycle(node_id: str) -> bool:
+        if node_id in visiting:
+            return True
+        if node_id in visited:
+            return False
+        visiting.add(node_id)
+        for target in outgoing[node_id]:
+            if has_cycle(target):
+                return True
+        visiting.remove(node_id)
+        visited.add(node_id)
+        return False
+
+    if any(has_cycle(node_id) for node_id in node_by_id):
+        recommendations.append("The wiring contains a loop. Rust electrical paths should flow in one direction without cycles.")
+
+    return recommendations
 
 
 class ElectricalTab(ctk.CTkFrame):
@@ -25,322 +218,1044 @@ class ElectricalTab(ctk.CTkFrame):
         super().__init__(master, fg_color="transparent")
         self.context = context
         self.catalog = electrical_catalog()
-        self.setup = ElectricalSetup()
+
+        self.nodes: list[dict[str, Any]] = []
+        self.connections: list[dict[str, Any]] = []
+        self.node_items: dict[str, dict[str, int]] = {}
+        self.connection_items: dict[str, int] = {}
+        self.selected_node_id: str | None = None
+        self.selected_connection_id: str | None = None
+        self.pending_source_id: str | None = None
+        self.drag_node_id: str | None = None
+        self.drag_offset = (0.0, 0.0)
+        self.palette_drag: dict[str, Any] | None = None
+        self._autosave_job: str | None = None
+        self.assumptions = dict(DEFAULT_ASSUMPTIONS)
+
         self.grid_columnconfigure(0, weight=1)
-        self.grid_rowconfigure(1, weight=1)
+        self.grid_rowconfigure(2, weight=1)
 
-        header = ctk.CTkFrame(self, fg_color="transparent")
-        header.grid(row=0, column=0, sticky="ew", pady=(0, 10))
-        header.grid_columnconfigure(0, weight=1)
-        ctk.CTkLabel(
-            header, text="Electrical Analyzer", font=ctk.CTkFont(size=28, weight="bold")
-        ).grid(row=0, column=0, sticky="w")
-        self.name_entry = ctk.CTkEntry(header, width=220, placeholder_text="Setup name")
-        self.name_entry.insert(0, self.setup.name)
-        self.name_entry.grid(row=0, column=1, padx=5)
-        ctk.CTkButton(header, text="New", width=80, command=self.new_setup).grid(row=0, column=2, padx=5)
-        ctk.CTkButton(header, text="Save version", width=110, command=self.save_version).grid(row=0, column=3, padx=5)
-
-        self.main_tabs = ctk.CTkTabview(self)
-        self.main_tabs.grid(row=1, column=0, sticky="nsew")
-        self.main_tabs.add("Planner")
-        self.main_tabs.add("Versions & Compare")
-        self._build_planner(self.main_tabs.tab("Planner"))
-        self._build_versions(self.main_tabs.tab("Versions & Compare"))
+        self._build_header()
+        self._build_metrics()
+        self._build_workspace()
+        self._build_recommendations()
+        self._load_state()
+        self._redraw_all()
         self.recalculate()
 
-    def _build_planner(self, parent) -> None:
-        parent.grid_columnconfigure(0, weight=2)
-        parent.grid_columnconfigure(1, weight=3)
-        parent.grid_rowconfigure(1, weight=1)
+    def _build_header(self) -> None:
+        header = ctk.CTkFrame(self, fg_color="transparent")
+        header.grid(row=0, column=0, sticky="ew", pady=(0, 8))
+        header.grid_columnconfigure(0, weight=1)
 
-        goal_card = SectionCard(
-            parent,
-            "Goal and inventory text",
-            "Examples: “Power 6 auto turrets, 4 lights, 2 doors and a large battery.” "
-            "Inventory text is added as non-active inventory.",
+        title = ctk.CTkFrame(header, fg_color="transparent")
+        title.grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            title,
+            text="Electrical Circuit Designer",
+            font=ctk.CTkFont(size=28, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="w")
+        ctk.CTkLabel(
+            title,
+            text="Drag equipment onto the canvas, move it into place, then wire output dots to input dots.",
+            text_color=MUTED,
+            anchor="w",
+        ).grid(row=1, column=0, sticky="w", pady=(2, 0))
+
+        self.name_entry = ctk.CTkEntry(header, width=210, placeholder_text="Circuit name")
+        self.name_entry.grid(row=0, column=1, rowspan=2, padx=(8, 5))
+        self.name_entry.bind("<KeyRelease>", lambda _event: self._schedule_autosave())
+
+        ctk.CTkButton(header, text="New circuit", width=105, command=self.new_circuit).grid(
+            row=0, column=2, rowspan=2, padx=4
         )
-        goal_card.grid(row=0, column=0, sticky="nsew", padx=(6, 4), pady=6)
-        text_area = ctk.CTkFrame(goal_card, fg_color="transparent")
-        text_area.grid(row=goal_card.content_row, column=0, sticky="ew", padx=12, pady=(0, 12))
-        text_area.grid_columnconfigure((0, 1), weight=1)
-        self.goal_text = ctk.CTkTextbox(text_area, height=100)
-        self.goal_text.grid(row=0, column=0, sticky="ew", padx=4)
-        self.goal_text.insert("1.0", "Power 6 auto turrets, 4 lights, 2 doors, and a large battery backup")
-        self.inventory_text = ctk.CTkTextbox(text_area, height=100)
-        self.inventory_text.grid(row=0, column=1, sticky="ew", padx=4)
-        self.inventory_text.insert("1.0", "2 solar panels\n1 root combiner")
-        ctk.CTkButton(text_area, text="Apply goal as planned", command=self.apply_goal).grid(
-            row=1, column=0, sticky="ew", padx=4, pady=6
+        ctk.CTkButton(header, text="Auto-layout", width=100, command=self.auto_layout).grid(
+            row=0, column=3, rowspan=2, padx=4
         )
-        ctk.CTkButton(text_area, text="Add inventory", command=self.apply_inventory).grid(
-            row=1, column=1, sticky="ew", padx=4, pady=6
+        ctk.CTkButton(header, text="Clear wires", width=95, command=self.clear_wires).grid(
+            row=0, column=4, rowspan=2, padx=4
+        )
+        ctk.CTkButton(
+            header,
+            text="Delete selected",
+            width=115,
+            command=self.delete_selected,
+            fg_color=DANGER,
+            hover_color="#b91c1c",
+        ).grid(row=0, column=5, rowspan=2, padx=4)
+        ctk.CTkButton(header, text="Save", width=78, command=self.save_circuit).grid(
+            row=0, column=6, rowspan=2, padx=(4, 0)
         )
 
-        metrics_frame = ctk.CTkFrame(parent, fg_color="transparent")
-        metrics_frame.grid(row=0, column=1, sticky="nsew", padx=(4, 6), pady=6)
-        metrics_frame.grid_columnconfigure((0, 1, 2), weight=1)
-        self.metric_cards = {}
-        for index, (key, title) in enumerate([
+    def _build_metrics(self) -> None:
+        metrics = ctk.CTkFrame(self, fg_color="transparent")
+        metrics.grid(row=1, column=0, sticky="ew", pady=(0, 8))
+        metrics.grid_columnconfigure(tuple(range(6)), weight=1)
+        self.metric_cards: dict[str, MetricCard] = {}
+        definitions = [
             ("load", "Active load"),
             ("generation", "Peak generation"),
             ("average", "Estimated average"),
-            ("battery", "Battery capacity"),
-            ("runtime", "No-generation runtime"),
-            ("headroom", "Peak headroom"),
-        ]):
-            card = MetricCard(metrics_frame, title)
-            card.grid(row=index // 3, column=index % 3, sticky="nsew", padx=4, pady=4)
+            ("battery", "Battery storage"),
+            ("runtime", "No-gen runtime"),
+            ("headroom", "Peak margin"),
+        ]
+        for column, (key, title) in enumerate(definitions):
+            card = MetricCard(metrics, title)
+            card.grid(row=0, column=column, sticky="nsew", padx=3)
             self.metric_cards[key] = card
 
-        builder = SectionCard(
-            parent,
-            "Manual component builder",
-            "Placed and Planned rows are included in calculations. Inventory rows are used for shopping awareness only.",
+    def _build_workspace(self) -> None:
+        workspace = ctk.CTkFrame(self, corner_radius=12)
+        workspace.grid(row=2, column=0, sticky="nsew")
+        workspace.grid_rowconfigure(0, weight=1)
+        workspace.grid_columnconfigure(0, minsize=250)
+        workspace.grid_columnconfigure(1, weight=1)
+        workspace.grid_columnconfigure(2, minsize=290)
+
+        self._build_palette(workspace)
+        self._build_canvas(workspace)
+        self._build_inspector(workspace)
+
+    def _build_palette(self, parent) -> None:
+        palette = ctk.CTkFrame(parent, corner_radius=10)
+        palette.grid(row=0, column=0, sticky="nsew", padx=(10, 5), pady=10)
+        palette.grid_columnconfigure(0, weight=1)
+        palette.grid_rowconfigure(3, weight=1)
+
+        ctk.CTkLabel(
+            palette,
+            text="Equipment",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 2))
+        ctk.CTkLabel(
+            palette,
+            text="Drag any item into the canvas. Click an item to add it in the center.",
+            text_color=MUTED,
+            justify="left",
+            anchor="w",
+            wraplength=220,
+        ).grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        self.palette_search = ctk.CTkEntry(palette, placeholder_text="Search equipment…")
+        self.palette_search.grid(row=2, column=0, sticky="ew", padx=12, pady=(0, 8))
+        self.palette_search.bind("<KeyRelease>", lambda _event: self._refresh_palette())
+
+        self.palette_scroll = ctk.CTkScrollableFrame(palette, fg_color="transparent")
+        self.palette_scroll.grid(row=3, column=0, sticky="nsew", padx=5, pady=(0, 8))
+        self.palette_scroll.grid_columnconfigure(0, weight=1)
+        self._refresh_palette()
+
+    def _build_canvas(self, parent) -> None:
+        shell = ctk.CTkFrame(parent, corner_radius=10)
+        shell.grid(row=0, column=1, sticky="nsew", padx=5, pady=10)
+        shell.grid_rowconfigure(1, weight=1)
+        shell.grid_columnconfigure(0, weight=1)
+
+        toolbar = ctk.CTkFrame(shell, fg_color="transparent")
+        toolbar.grid(row=0, column=0, columnspan=2, sticky="ew", padx=10, pady=(8, 4))
+        toolbar.grid_columnconfigure(0, weight=1)
+        self.wire_status = ctk.CTkLabel(
+            toolbar,
+            text="Wire mode: click a node's right output dot, then another node's left input dot.",
+            text_color=MUTED,
+            anchor="w",
         )
-        builder.grid(row=1, column=0, columnspan=2, sticky="nsew", padx=6, pady=6)
-        builder.grid_rowconfigure(builder.content_row + 1, weight=1)
-        controls = ctk.CTkFrame(builder, fg_color="transparent")
-        controls.grid(row=builder.content_row, column=0, sticky="ew", padx=12, pady=6)
-        controls.grid_columnconfigure(0, weight=3)
-        controls.grid_columnconfigure(3, weight=2)
-        self.component_menu = ctk.CTkOptionMenu(controls, values=sorted(self.catalog))
-        self.component_menu.grid(row=0, column=0, sticky="ew", padx=3)
-        self.quantity_entry = ctk.CTkEntry(controls, width=80, placeholder_text="Qty")
-        self.quantity_entry.insert(0, "1")
-        self.quantity_entry.grid(row=0, column=1, padx=3)
-        self.state_menu = ctk.CTkOptionMenu(controls, values=self.STATES)
-        self.state_menu.set("Planned")
-        self.state_menu.grid(row=0, column=2, padx=3)
-        self.zone_menu = ctk.CTkOptionMenu(controls, values=self.ZONES)
-        self.zone_menu.grid(row=0, column=3, sticky="ew", padx=3)
-        ctk.CTkButton(controls, text="Add", width=70, command=self.add_manual).grid(row=0, column=4, padx=3)
-        ctk.CTkButton(controls, text="Remove selected", width=120, command=self.remove_selected).grid(row=0, column=5, padx=3)
+        self.wire_status.grid(row=0, column=0, sticky="ew")
+        ctk.CTkButton(
+            toolbar,
+            text="Cancel wire",
+            width=92,
+            fg_color="transparent",
+            border_width=1,
+            command=self.cancel_wire,
+        ).grid(row=0, column=1, padx=(8, 0))
 
-        table_frame = ctk.CTkFrame(builder, fg_color="transparent")
-        table_frame.grid(row=builder.content_row + 1, column=0, sticky="nsew", padx=12, pady=6)
-        table_frame.grid_columnconfigure(0, weight=1)
-        table_frame.grid_rowconfigure(0, weight=1)
-        columns = ("component", "quantity", "state", "zone", "unit", "total")
-        self.tree = ttk.Treeview(table_frame, columns=columns, show="headings", height=11)
-        for column, width in [
-            ("component", 250), ("quantity", 80), ("state", 90),
-            ("zone", 100), ("unit", 90), ("total", 100)
-        ]:
-            self.tree.heading(column, text=column.title())
-            self.tree.column(column, width=width, anchor="center")
-        self.tree.grid(row=0, column=0, sticky="nsew")
-        scroll = ttk.Scrollbar(table_frame, orient="vertical", command=self.tree.yview)
-        scroll.grid(row=0, column=1, sticky="ns")
-        self.tree.configure(yscrollcommand=scroll.set)
+        canvas_frame = ctk.CTkFrame(shell, fg_color="#09111f", corner_radius=8)
+        canvas_frame.grid(row=1, column=0, sticky="nsew", padx=(8, 0), pady=(0, 8))
+        canvas_frame.grid_rowconfigure(0, weight=1)
+        canvas_frame.grid_columnconfigure(0, weight=1)
 
-        assumptions = ctk.CTkFrame(builder, fg_color="transparent")
-        assumptions.grid(row=builder.content_row + 2, column=0, sticky="ew", padx=12, pady=6)
-        assumptions.grid_columnconfigure((1, 3, 5), weight=1)
-        ctk.CTkLabel(assumptions, text="Solar avg %").grid(row=0, column=0, padx=3)
-        self.solar = ctk.CTkEntry(assumptions)
-        self.solar.insert(0, "35")
-        self.solar.grid(row=0, column=1, sticky="ew", padx=3)
-        ctk.CTkLabel(assumptions, text="Wind avg %").grid(row=0, column=2, padx=3)
-        self.wind = ctk.CTkEntry(assumptions)
-        self.wind.insert(0, "55")
-        self.wind.grid(row=0, column=3, sticky="ew", padx=3)
-        ctk.CTkLabel(assumptions, text="Battery charge %").grid(row=0, column=4, padx=3)
-        self.charge = ctk.CTkEntry(assumptions)
-        self.charge.insert(0, "100")
-        self.charge.grid(row=0, column=5, sticky="ew", padx=3)
-        ctk.CTkButton(assumptions, text="Recalculate", command=self.recalculate).grid(row=0, column=6, padx=5)
-
-        tips = SectionCard(builder, "Optimization report")
-        tips.grid(row=builder.content_row + 3, column=0, sticky="ew", padx=12, pady=(4, 12))
-        self.tips_box = ctk.CTkTextbox(tips, height=145)
-        self.tips_box.grid(row=tips.content_row, column=0, sticky="ew", padx=10, pady=(0, 10))
-
-    def _build_versions(self, parent) -> None:
-        parent.grid_columnconfigure((0, 1), weight=1)
-        parent.grid_rowconfigure(1, weight=1)
-        self.left_version = ctk.CTkOptionMenu(parent, values=["No saved versions"])
-        self.left_version.grid(row=0, column=0, sticky="ew", padx=8, pady=8)
-        self.right_version = ctk.CTkOptionMenu(parent, values=["Current working setup"])
-        self.right_version.grid(row=0, column=1, sticky="ew", padx=8, pady=8)
-        ctk.CTkButton(parent, text="Compare", command=self.compare_versions).grid(
-            row=0, column=2, padx=8, pady=8
+        self.canvas = tk.Canvas(
+            canvas_frame,
+            bg="#09111f",
+            highlightthickness=0,
+            scrollregion=(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT),
+            cursor="arrow",
         )
-        self.compare_box = ctk.CTkTextbox(parent)
-        self.compare_box.grid(row=1, column=0, columnspan=3, sticky="nsew", padx=8, pady=8)
-        self.refresh_version_menus()
+        self.canvas.grid(row=0, column=0, sticky="nsew")
 
-    def setup_rows(self) -> list[dict]:
-        return list(self.context.store.get("electrical_setups", []))
+        self.vscroll = ctk.CTkScrollbar(canvas_frame, orientation="vertical", command=self.canvas.yview)
+        self.vscroll.grid(row=0, column=1, sticky="ns")
+        self.hscroll = ctk.CTkScrollbar(shell, orientation="horizontal", command=self.canvas.xview)
+        self.hscroll.grid(row=2, column=0, sticky="ew", padx=(8, 0), pady=(0, 8))
+        self.canvas.configure(yscrollcommand=self.vscroll.set, xscrollcommand=self.hscroll.set)
 
-    def _version_label(self, setup: ElectricalSetup) -> str:
-        return f"{setup.name} · v{setup.version} · {setup.updated_at}"
+        self.canvas.bind("<Button-1>", self._canvas_blank_click)
+        self.canvas.bind("<Delete>", lambda _event: self.delete_selected())
+        self.canvas.bind("<BackSpace>", lambda _event: self.delete_selected())
+        self.canvas.bind("<ButtonPress-2>", self._pan_start)
+        self.canvas.bind("<B2-Motion>", self._pan_move)
+        self.canvas.bind("<MouseWheel>", self._canvas_wheel)
 
-    def refresh_version_menus(self) -> None:
-        setups = [ElectricalSetup.from_dict(row) for row in self.setup_rows()]
-        labels = [self._version_label(setup) for setup in setups] or ["No saved versions"]
-        self.left_version.configure(values=labels)
-        self.right_version.configure(values=labels + ["Current working setup"])
-        self.left_version.set(labels[-1])
-        self.right_version.set("Current working setup")
+        for x in range(0, CANVAS_WIDTH, 40):
+            self.canvas.create_line(x, 0, x, CANVAS_HEIGHT, fill="#102038", width=1, tags=("grid",))
+        for y in range(0, CANVAS_HEIGHT, 40):
+            self.canvas.create_line(0, y, CANVAS_WIDTH, y, fill="#102038", width=1, tags=("grid",))
+        self.canvas.tag_lower("grid")
 
-    def new_setup(self) -> None:
-        self.setup = ElectricalSetup(name="New Setup")
-        self.name_entry.delete(0, "end")
-        self.name_entry.insert(0, self.setup.name)
-        self.goal_text.delete("1.0", "end")
-        self.refresh_table()
-        self.recalculate()
+    def _build_inspector(self, parent) -> None:
+        inspector = ctk.CTkFrame(parent, corner_radius=10)
+        inspector.grid(row=0, column=2, sticky="nsew", padx=(5, 10), pady=10)
+        inspector.grid_columnconfigure(0, weight=1)
+        inspector.grid_rowconfigure(8, weight=1)
 
-    def apply_goal(self) -> None:
-        text = self.goal_text.get("1.0", "end").strip()
-        result = parse_component_text(text)
-        self.setup.goal_text = text
-        self.setup.components = merge_parsed_components(
-            self.setup.components, result.components, "Planned", "Main"
+        ctk.CTkLabel(
+            inspector,
+            text="Selected equipment",
+            font=ctk.CTkFont(size=18, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=12, pady=(12, 2))
+        self.inspector_title = ctk.CTkLabel(
+            inspector,
+            text="Nothing selected",
+            text_color=MUTED,
+            anchor="w",
+            justify="left",
+            wraplength=255,
         )
-        self.refresh_table()
-        self.recalculate()
-        if result.unmatched:
-            messagebox.showwarning(
-                "Partially parsed",
-                "These fragments were not recognized:\n\n" + "\n".join(result.unmatched),
+        self.inspector_title.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 8))
+
+        editor = ctk.CTkFrame(inspector, fg_color="transparent")
+        editor.grid(row=2, column=0, sticky="ew", padx=10)
+        editor.grid_columnconfigure(1, weight=1)
+
+        ctk.CTkLabel(editor, text="Quantity", text_color=MUTED).grid(row=0, column=0, sticky="w", padx=2, pady=3)
+        self.quantity_entry = ctk.CTkEntry(editor)
+        self.quantity_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=3)
+
+        ctk.CTkLabel(editor, text="State", text_color=MUTED).grid(row=1, column=0, sticky="w", padx=2, pady=3)
+        self.state_menu = ctk.CTkOptionMenu(editor, values=self.STATES)
+        self.state_menu.grid(row=1, column=1, sticky="ew", padx=2, pady=3)
+
+        ctk.CTkLabel(editor, text="Zone", text_color=MUTED).grid(row=2, column=0, sticky="w", padx=2, pady=3)
+        self.zone_menu = ctk.CTkOptionMenu(editor, values=self.ZONES)
+        self.zone_menu.grid(row=2, column=1, sticky="ew", padx=2, pady=3)
+
+        ctk.CTkButton(editor, text="Apply changes", command=self.apply_inspector_changes).grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(6, 3)
+        )
+
+        ctk.CTkLabel(
+            inspector,
+            text="Electrical information",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=3, column=0, sticky="ew", padx=12, pady=(10, 3))
+        self.spec_box = ctk.CTkTextbox(inspector, height=145)
+        self.spec_box.grid(row=4, column=0, sticky="ew", padx=12)
+
+        ctk.CTkLabel(
+            inspector,
+            text="Connected path",
+            font=ctk.CTkFont(size=14, weight="bold"),
+            anchor="w",
+        ).grid(row=5, column=0, sticky="ew", padx=12, pady=(10, 3))
+        self.path_box = ctk.CTkTextbox(inspector, height=105)
+        self.path_box.grid(row=6, column=0, sticky="ew", padx=12)
+
+        assumptions = ctk.CTkFrame(inspector, fg_color="transparent")
+        assumptions.grid(row=7, column=0, sticky="ew", padx=10, pady=(10, 4))
+        assumptions.grid_columnconfigure(1, weight=1)
+        ctk.CTkLabel(assumptions, text="Solar average %", text_color=MUTED).grid(row=0, column=0, sticky="w", padx=2, pady=2)
+        self.solar_entry = ctk.CTkEntry(assumptions)
+        self.solar_entry.grid(row=0, column=1, sticky="ew", padx=2, pady=2)
+        ctk.CTkLabel(assumptions, text="Wind average %", text_color=MUTED).grid(row=1, column=0, sticky="w", padx=2, pady=2)
+        self.wind_entry = ctk.CTkEntry(assumptions)
+        self.wind_entry.grid(row=1, column=1, sticky="ew", padx=2, pady=2)
+        ctk.CTkLabel(assumptions, text="Battery charge %", text_color=MUTED).grid(row=2, column=0, sticky="w", padx=2, pady=2)
+        self.charge_entry = ctk.CTkEntry(assumptions)
+        self.charge_entry.grid(row=2, column=1, sticky="ew", padx=2, pady=2)
+        ctk.CTkButton(assumptions, text="Recalculate assumptions", command=self.apply_assumptions).grid(
+            row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(5, 2)
+        )
+
+        self._set_textbox(self.spec_box, "Select a component to see its complete electrical values.")
+        self._set_textbox(self.path_box, "Select a component to see incoming and outgoing paths.")
+
+    def _build_recommendations(self) -> None:
+        panel = ctk.CTkFrame(self, corner_radius=12)
+        panel.grid(row=3, column=0, sticky="ew", pady=(8, 0))
+        panel.grid_columnconfigure(0, weight=1)
+        ctk.CTkLabel(
+            panel,
+            text="Suggested changes",
+            font=ctk.CTkFont(size=17, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, sticky="ew", padx=14, pady=(10, 2))
+        self.recommendation_box = ctk.CTkTextbox(panel, height=150)
+        self.recommendation_box.grid(row=1, column=0, sticky="ew", padx=12, pady=(0, 10))
+
+    def _refresh_palette(self) -> None:
+        for child in self.palette_scroll.winfo_children():
+            child.destroy()
+
+        query = self.palette_search.get().strip().casefold() if hasattr(self, "palette_search") else ""
+        rows = []
+        for name, row in self.catalog.items():
+            searchable = " ".join(
+                [name, str(row.get("category", "")), " ".join(str(alias) for alias in row.get("aliases", []))]
+            ).casefold()
+            if query and query not in searchable:
+                continue
+            rows.append((name, row))
+
+        rows.sort(
+            key=lambda item: (
+                CATEGORY_ORDER.get(str(item[1].get("category", "utility")).lower(), 9),
+                item[0].casefold(),
             )
-
-    def apply_inventory(self) -> None:
-        result = parse_component_text(self.inventory_text.get("1.0", "end"))
-        self.setup.components = merge_parsed_components(
-            self.setup.components, result.components, "Inventory", "Storage"
         )
-        self.refresh_table()
-        self.recalculate()
-        if result.unmatched:
-            messagebox.showwarning("Partially parsed", "\n".join(result.unmatched))
 
-    def add_manual(self) -> None:
-        quantity = max(1, safe_int(self.quantity_entry.get(), 1))
-        self.setup.components.append(
-            SetupComponent(
-                self.component_menu.get(),
-                quantity,
-                self.state_menu.get(),
-                self.zone_menu.get(),
+        current_label = None
+        grid_row = 0
+        for name, row in rows:
+            category = str(row.get("category", "utility")).lower()
+            label = CATEGORY_LABELS.get(category, category.upper())
+            if label != current_label:
+                ctk.CTkLabel(
+                    self.palette_scroll,
+                    text=label,
+                    text_color=MUTED,
+                    font=ctk.CTkFont(size=11, weight="bold"),
+                    anchor="w",
+                ).grid(row=grid_row, column=0, sticky="ew", padx=7, pady=(8, 2))
+                grid_row += 1
+                current_label = label
+
+            text = f"{name}\n{self._component_brief(row)}"
+            button = ctk.CTkButton(
+                self.palette_scroll,
+                text=text,
+                anchor="w",
+                justify="left",
+                height=48,
+                fg_color="#172033",
+                hover_color="#24324a",
             )
-        )
-        self.refresh_table()
-        self.recalculate()
+            button.grid(row=grid_row, column=0, sticky="ew", padx=4, pady=2)
+            button.bind("<ButtonPress-1>", lambda event, component=name: self._palette_press(event, component))
+            button.bind("<ButtonRelease-1>", lambda event, component=name: self._palette_release(event, component))
+            grid_row += 1
 
-    def remove_selected(self) -> None:
-        indexes = sorted((self.tree.index(item) for item in self.tree.selection()), reverse=True)
-        for index in indexes:
-            if 0 <= index < len(self.setup.components):
-                self.setup.components.pop(index)
-        self.refresh_table()
-        self.recalculate()
-
-    def refresh_table(self) -> None:
-        self.tree.delete(*self.tree.get_children())
-        for item in self.setup.components:
-            row = self.catalog.get(item.component, {})
-            category = row.get("category")
-            unit_value = row.get("power_draw", 0)
-            unit_text = f"{unit_value} rW"
-            total_text = f"{unit_value * item.quantity} rW"
-            if category == "generation":
-                unit_value = row.get("max_output", 0)
-                unit_text = f"{unit_value} rW peak"
-                total_text = f"{unit_value * item.quantity} rW"
-            elif category == "storage":
-                unit_value = row.get("capacity_rwm", 0)
-                unit_text = f"{unit_value} rWm"
-                total_text = f"{unit_value * item.quantity} rWm"
-            self.tree.insert(
-                "",
-                "end",
-                values=(item.component, item.quantity, item.state, item.zone, unit_text, total_text),
+        if not rows:
+            ctk.CTkLabel(self.palette_scroll, text="No equipment matches that search.", text_color=MUTED).grid(
+                row=0, column=0, sticky="ew", padx=8, pady=12
             )
-
-    def sync_assumptions(self) -> None:
-        self.setup.name = self.name_entry.get().strip() or "Unnamed Setup"
-        self.setup.assumptions = {
-            "solar_utilization": max(0.0, min(1.0, safe_float(self.solar.get(), 35) / 100)),
-            "wind_utilization": max(0.0, min(1.0, safe_float(self.wind.get(), 55) / 100)),
-            "battery_charge_fraction": max(0.0, min(1.0, safe_float(self.charge.get(), 100) / 100)),
-        }
 
     @staticmethod
-    def format_runtime(minutes: float) -> str:
-        if math.isinf(minutes):
-            return "Indefinite"
-        return f"{minutes / 60:.1f} h"
+    def _component_brief(row: dict[str, Any]) -> str:
+        category = str(row.get("category", "utility")).lower()
+        if category == "generation":
+            return f"{float(row.get('max_output', 0)):.0f} rW peak"
+        if category == "storage":
+            return (
+                f"{float(row.get('capacity_rwm', 0)):.0f} rWm · "
+                f"{float(row.get('output_limit', 0)):.0f} rW output"
+            )
+        draw = float(row.get("power_draw", 0))
+        return f"{draw:.0f} rW draw" if draw else "Routing / control"
+
+    def _palette_press(self, event, component: str) -> None:
+        self.palette_drag = {
+            "component": component,
+            "root_x": event.x_root,
+            "root_y": event.y_root,
+        }
+
+    def _palette_release(self, event, component: str) -> None:
+        drag = self.palette_drag or {}
+        self.palette_drag = None
+        dx = abs(event.x_root - int(drag.get("root_x", event.x_root)))
+        dy = abs(event.y_root - int(drag.get("root_y", event.y_root)))
+
+        left = self.canvas.winfo_rootx()
+        top = self.canvas.winfo_rooty()
+        right = left + self.canvas.winfo_width()
+        bottom = top + self.canvas.winfo_height()
+
+        if left <= event.x_root <= right and top <= event.y_root <= bottom:
+            x = self.canvas.canvasx(event.x_root - left)
+            y = self.canvas.canvasy(event.y_root - top)
+            self.add_node(component, x, y)
+        elif dx < 6 and dy < 6:
+            x = self.canvas.canvasx(self.canvas.winfo_width() / 2)
+            y = self.canvas.canvasy(self.canvas.winfo_height() / 2)
+            self.add_node(component, x, y)
+
+    def add_node(self, component: str, x: float, y: float) -> None:
+        node = {
+            "id": str(uuid4()),
+            "component": component,
+            "quantity": 1,
+            "state": "Planned",
+            "zone": "Main",
+            "note": "",
+            "x": max(20.0, min(float(x) - NODE_WIDTH / 2, CANVAS_WIDTH - NODE_WIDTH - 20)),
+            "y": max(20.0, min(float(y) - NODE_HEIGHT / 2, CANVAS_HEIGHT - NODE_HEIGHT - 20)),
+        }
+        self.nodes.append(node)
+        self._draw_node(node)
+        self.select_node(str(node["id"]))
+        self.recalculate()
+        self._schedule_autosave()
+
+    def _draw_node(self, node: dict[str, Any]) -> None:
+        node_id = str(node["id"])
+        x = float(node.get("x", 50))
+        y = float(node.get("y", 50))
+        row = self.catalog.get(str(node.get("component", "")), {})
+        category = str(row.get("category", "utility")).lower()
+        fill = CATEGORY_COLORS.get(category, "#374151")
+
+        body = self.canvas.create_rectangle(
+            x,
+            y,
+            x + NODE_WIDTH,
+            y + NODE_HEIGHT,
+            fill=fill,
+            outline="#64748b",
+            width=2,
+            tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
+        )
+        title = self.canvas.create_text(
+            x + 14,
+            y + 15,
+            text=str(node.get("component", "Component")),
+            fill="#f8fafc",
+            font=("Segoe UI", 11, "bold"),
+            anchor="nw",
+            width=NODE_WIDTH - 28,
+            tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
+        )
+        detail = self.canvas.create_text(
+            x + 14,
+            y + 50,
+            text=self._node_detail(node),
+            fill="#cbd5e1",
+            font=("Segoe UI", 9),
+            anchor="nw",
+            width=NODE_WIDTH - 28,
+            tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
+        )
+        input_dot = self.canvas.create_oval(
+            x - 7,
+            y + NODE_HEIGHT / 2 - 7,
+            x + 7,
+            y + NODE_HEIGHT / 2 + 7,
+            fill="#38bdf8",
+            outline="#e0f2fe",
+            width=2,
+            tags=("connector", "input", f"input:{node_id}"),
+        )
+        output_dot = self.canvas.create_oval(
+            x + NODE_WIDTH - 7,
+            y + NODE_HEIGHT / 2 - 7,
+            x + NODE_WIDTH + 7,
+            y + NODE_HEIGHT / 2 + 7,
+            fill="#f59e0b",
+            outline="#fffbeb",
+            width=2,
+            tags=("connector", "output", f"output:{node_id}"),
+        )
+        self.node_items[node_id] = {
+            "body": body,
+            "title": title,
+            "detail": detail,
+            "input": input_dot,
+            "output": output_dot,
+        }
+
+        for item in (body, title, detail):
+            self.canvas.tag_bind(item, "<ButtonPress-1>", lambda event, nid=node_id: self._node_press(event, nid))
+            self.canvas.tag_bind(item, "<B1-Motion>", lambda event, nid=node_id: self._node_drag(event, nid))
+            self.canvas.tag_bind(item, "<ButtonRelease-1>", lambda event, nid=node_id: self._node_release(event, nid))
+        self.canvas.tag_bind(input_dot, "<Button-1>", lambda event, nid=node_id: self._input_clicked(event, nid))
+        self.canvas.tag_bind(output_dot, "<Button-1>", lambda event, nid=node_id: self._output_clicked(event, nid))
+
+    def _node_detail(self, node: dict[str, Any]) -> str:
+        row = self.catalog.get(str(node.get("component", "")), {})
+        brief = self._component_brief(row)
+        return f"x{max(1, int(node.get('quantity', 1) or 1))} · {brief}\n{node.get('state', 'Planned')} · {node.get('zone', 'Main')}"
+
+    def _node_press(self, event, node_id: str) -> None:
+        self.canvas.focus_set()
+        self.select_node(node_id)
+        node = self._node(node_id)
+        if node is None:
+            return
+        x = self.canvas.canvasx(event.x)
+        y = self.canvas.canvasy(event.y)
+        self.drag_node_id = node_id
+        self.drag_offset = (x - float(node.get("x", 0)), y - float(node.get("y", 0)))
+
+    def _node_drag(self, event, node_id: str) -> None:
+        if self.drag_node_id != node_id:
+            return
+        node = self._node(node_id)
+        if node is None:
+            return
+        x = self.canvas.canvasx(event.x) - self.drag_offset[0]
+        y = self.canvas.canvasy(event.y) - self.drag_offset[1]
+        node["x"] = max(8.0, min(x, CANVAS_WIDTH - NODE_WIDTH - 8))
+        node["y"] = max(8.0, min(y, CANVAS_HEIGHT - NODE_HEIGHT - 8))
+        self._position_node(node_id)
+        self._update_connections_for_node(node_id)
+
+    def _node_release(self, _event, node_id: str) -> None:
+        if self.drag_node_id == node_id:
+            self.drag_node_id = None
+            self._schedule_autosave()
+
+    def _position_node(self, node_id: str) -> None:
+        node = self._node(node_id)
+        items = self.node_items.get(node_id)
+        if node is None or items is None:
+            return
+        x = float(node.get("x", 0))
+        y = float(node.get("y", 0))
+        self.canvas.coords(items["body"], x, y, x + NODE_WIDTH, y + NODE_HEIGHT)
+        self.canvas.coords(items["title"], x + 14, y + 15)
+        self.canvas.coords(items["detail"], x + 14, y + 50)
+        self.canvas.coords(items["input"], x - 7, y + NODE_HEIGHT / 2 - 7, x + 7, y + NODE_HEIGHT / 2 + 7)
+        self.canvas.coords(
+            items["output"],
+            x + NODE_WIDTH - 7,
+            y + NODE_HEIGHT / 2 - 7,
+            x + NODE_WIDTH + 7,
+            y + NODE_HEIGHT / 2 + 7,
+        )
+
+    def _output_clicked(self, event, node_id: str) -> None:
+        self.canvas.focus_set()
+        self.pending_source_id = node_id
+        self.select_node(node_id)
+        component = self._node(node_id).get("component", "component") if self._node(node_id) else "component"
+        self.wire_status.configure(
+            text=f"Wiring from {component}: click the blue input dot on the destination component.",
+            text_color=("#92400e", "#fbbf24"),
+        )
+
+    def _input_clicked(self, event, node_id: str) -> None:
+        self.canvas.focus_set()
+        if self.pending_source_id is None:
+            self.select_node(node_id)
+            self.wire_status.configure(
+                text="Choose an orange output dot first, then this blue input dot.",
+                text_color=MUTED,
+            )
+            return
+        source = self.pending_source_id
+        self.pending_source_id = None
+        if source == node_id:
+            self.wire_status.configure(text="A component cannot be wired to itself.", text_color=("#991b1b", "#f87171"))
+            return
+        if any(connection.get("source") == source and connection.get("target") == node_id for connection in self.connections):
+            self.wire_status.configure(text="That power path already exists.", text_color=MUTED)
+            return
+        connection = {"id": str(uuid4()), "source": source, "target": node_id}
+        self.connections.append(connection)
+        self._draw_connection(connection)
+        self.select_connection(str(connection["id"]))
+        self.wire_status.configure(
+            text="Path created. Click another output dot to continue wiring.",
+            text_color=("#166534", "#4ade80"),
+        )
+        self.recalculate()
+        self._schedule_autosave()
+
+    def cancel_wire(self) -> None:
+        self.pending_source_id = None
+        self.wire_status.configure(
+            text="Wire mode: click a node's right output dot, then another node's left input dot.",
+            text_color=MUTED,
+        )
+
+    def _draw_connection(self, connection: dict[str, Any]) -> None:
+        connection_id = str(connection["id"])
+        coords = self._connection_coords(connection)
+        if coords is None:
+            return
+        line = self.canvas.create_line(
+            *coords,
+            fill="#f59e0b",
+            width=3,
+            smooth=True,
+            splinesteps=20,
+            arrow=tk.LAST,
+            arrowshape=(10, 12, 5),
+            tags=("wire", f"wire:{connection_id}"),
+        )
+        self.connection_items[connection_id] = line
+        if self.canvas.find_withtag("node"):
+            self.canvas.tag_lower(line, "node")
+        self.canvas.tag_raise(line, "grid")
+        self.canvas.tag_bind(line, "<Button-1>", lambda event, cid=connection_id: self._wire_clicked(event, cid))
+
+    def _connection_coords(self, connection: dict[str, Any]) -> tuple[float, ...] | None:
+        source = self._node(str(connection.get("source", "")))
+        target = self._node(str(connection.get("target", "")))
+        if source is None or target is None:
+            return None
+        sx = float(source.get("x", 0)) + NODE_OUTPUT_X
+        sy = float(source.get("y", 0)) + NODE_HEIGHT / 2
+        tx = float(target.get("x", 0)) + NODE_INPUT_X
+        ty = float(target.get("y", 0)) + NODE_HEIGHT / 2
+        bend = max(55.0, abs(tx - sx) * 0.45)
+        if tx >= sx:
+            return (sx, sy, sx + bend, sy, tx - bend, ty, tx, ty)
+        detour = max(sy, ty) + 90
+        return (sx, sy, sx + 55, sy, sx + 55, detour, tx - 55, detour, tx - 55, ty, tx, ty)
+
+    def _wire_clicked(self, _event, connection_id: str) -> None:
+        self.canvas.focus_set()
+        self.select_connection(connection_id)
+
+    def _update_connections_for_node(self, node_id: str) -> None:
+        for connection in self.connections:
+            if connection.get("source") != node_id and connection.get("target") != node_id:
+                continue
+            connection_id = str(connection.get("id"))
+            item = self.connection_items.get(connection_id)
+            coords = self._connection_coords(connection)
+            if item is not None and coords is not None:
+                self.canvas.coords(item, *coords)
+
+    def select_node(self, node_id: str) -> None:
+        self.selected_node_id = node_id
+        self.selected_connection_id = None
+        self._refresh_selection_style()
+        self._refresh_inspector()
+
+    def select_connection(self, connection_id: str) -> None:
+        self.selected_node_id = None
+        self.selected_connection_id = connection_id
+        self._refresh_selection_style()
+        connection = self._connection(connection_id)
+        if connection is not None:
+            source = self._node(str(connection.get("source", "")))
+            target = self._node(str(connection.get("target", "")))
+            source_name = source.get("component", "Source") if source else "Source"
+            target_name = target.get("component", "Target") if target else "Target"
+            self.inspector_title.configure(text=f"Selected path\n{source_name} → {target_name}", text_color=("#92400e", "#fbbf24"))
+            self._set_textbox(self.spec_box, "This is a visual power path. Delete it with Delete selected or the keyboard Delete key.")
+            self._set_textbox(self.path_box, f"OUTPUT\n{source_name}\n\nINPUT\n{target_name}")
+
+    def _refresh_selection_style(self) -> None:
+        for node_id, items in self.node_items.items():
+            selected = node_id == self.selected_node_id
+            self.canvas.itemconfigure(items["body"], outline=ACCENT if selected else "#64748b", width=4 if selected else 2)
+        for connection_id, item in self.connection_items.items():
+            selected = connection_id == self.selected_connection_id
+            self.canvas.itemconfigure(item, fill="#fde047" if selected else "#f59e0b", width=5 if selected else 3)
+
+    def _canvas_blank_click(self, event) -> None:
+        current = self.canvas.find_withtag("current")
+        if current:
+            tags = self.canvas.gettags(current[0])
+            if any(tag.startswith(("node:", "wire:", "input:", "output:")) for tag in tags):
+                return
+        self.canvas.focus_set()
+        self.selected_node_id = None
+        self.selected_connection_id = None
+        self._refresh_selection_style()
+        self._refresh_inspector()
+
+    def _pan_start(self, event) -> None:
+        self.canvas.scan_mark(event.x, event.y)
+
+    def _pan_move(self, event) -> None:
+        self.canvas.scan_dragto(event.x, event.y, gain=1)
+
+    def _canvas_wheel(self, event) -> None:
+        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+
+    def _refresh_inspector(self) -> None:
+        node = self._node(self.selected_node_id) if self.selected_node_id else None
+        if node is None:
+            self.inspector_title.configure(text="Nothing selected", text_color=MUTED)
+            self._replace_entry(self.quantity_entry, "1")
+            self.state_menu.set("Planned")
+            self.zone_menu.set("Main")
+            self._set_textbox(self.spec_box, "Select a component to see its complete electrical values.")
+            self._set_textbox(self.path_box, "Select a component to see incoming and outgoing paths.")
+            return
+
+        component = str(node.get("component", "Component"))
+        row = self.catalog.get(component, {})
+        category = str(row.get("category", "utility")).replace("_", " ").title()
+        self.inspector_title.configure(text=f"{component}\n{category}", text_color="#f8fafc")
+        self._replace_entry(self.quantity_entry, str(max(1, int(node.get("quantity", 1) or 1))))
+        self.state_menu.set(str(node.get("state", "Planned")))
+        self.zone_menu.set(str(node.get("zone", "Main")))
+
+        specs = [
+            f"Category: {category}",
+            f"Power draw: {float(row.get('power_draw', 0)):.0f} rW each",
+            f"Maximum output: {float(row.get('max_output', 0)):.0f} rW each",
+            f"Battery capacity: {float(row.get('capacity_rwm', 0)):.0f} rWm each",
+            f"Output limit: {float(row.get('output_limit', 0)):.0f} rW each",
+            f"Charge efficiency: {float(row.get('charge_efficiency', 1.0)) * 100:.0f}%",
+            f"Quantity total: x{max(1, int(node.get('quantity', 1) or 1))}",
+        ]
+        self._set_textbox(self.spec_box, "\n".join(specs))
+
+        incoming_names = []
+        outgoing_names = []
+        node_id = str(node.get("id"))
+        for connection in self.connections:
+            if connection.get("target") == node_id:
+                source = self._node(str(connection.get("source", "")))
+                if source:
+                    incoming_names.append(str(source.get("component", "Source")))
+            if connection.get("source") == node_id:
+                target = self._node(str(connection.get("target", "")))
+                if target:
+                    outgoing_names.append(str(target.get("component", "Target")))
+        path_text = "INPUTS\n" + ("\n".join(f"← {name}" for name in incoming_names) if incoming_names else "None")
+        path_text += "\n\nOUTPUTS\n" + ("\n".join(f"→ {name}" for name in outgoing_names) if outgoing_names else "None")
+        self._set_textbox(self.path_box, path_text)
+
+    def apply_inspector_changes(self) -> None:
+        node = self._node(self.selected_node_id) if self.selected_node_id else None
+        if node is None:
+            return
+        try:
+            quantity = max(1, int(self.quantity_entry.get().strip() or "1"))
+        except ValueError:
+            quantity = 1
+        node["quantity"] = quantity
+        node["state"] = self.state_menu.get()
+        node["zone"] = self.zone_menu.get()
+        items = self.node_items.get(str(node["id"]))
+        if items:
+            self.canvas.itemconfigure(items["detail"], text=self._node_detail(node))
+        self._refresh_inspector()
+        self.recalculate()
+        self._schedule_autosave()
+
+    def apply_assumptions(self) -> None:
+        self.assumptions = {
+            "solar_utilization": self._percent(self.solar_entry.get(), 35),
+            "wind_utilization": self._percent(self.wind_entry.get(), 55),
+            "battery_charge_fraction": self._percent(self.charge_entry.get(), 100),
+        }
+        self._sync_assumption_entries()
+        self.recalculate()
+        self._schedule_autosave()
+
+    @staticmethod
+    def _percent(value: str, default: float) -> float:
+        try:
+            number = float(value.strip())
+        except (ValueError, AttributeError):
+            number = default
+        return max(0.0, min(1.0, number / 100.0))
+
+    def delete_selected(self) -> None:
+        if self.selected_connection_id:
+            connection_id = self.selected_connection_id
+            self.connections = [row for row in self.connections if str(row.get("id")) != connection_id]
+            item = self.connection_items.pop(connection_id, None)
+            if item is not None:
+                self.canvas.delete(item)
+            self.selected_connection_id = None
+        elif self.selected_node_id:
+            node_id = self.selected_node_id
+            self.nodes = [node for node in self.nodes if str(node.get("id")) != node_id]
+            items = self.node_items.pop(node_id, {})
+            for item in items.values():
+                self.canvas.delete(item)
+            removed_connection_ids = {
+                str(connection.get("id"))
+                for connection in self.connections
+                if connection.get("source") == node_id or connection.get("target") == node_id
+            }
+            self.connections = [
+                connection
+                for connection in self.connections
+                if str(connection.get("id")) not in removed_connection_ids
+            ]
+            for connection_id in removed_connection_ids:
+                item = self.connection_items.pop(connection_id, None)
+                if item is not None:
+                    self.canvas.delete(item)
+            self.selected_node_id = None
+            if self.pending_source_id == node_id:
+                self.cancel_wire()
+        else:
+            return
+        self._refresh_selection_style()
+        self._refresh_inspector()
+        self.recalculate()
+        self._schedule_autosave()
+
+    def clear_wires(self) -> None:
+        if not self.connections:
+            return
+        if not messagebox.askyesno("Clear wires", "Remove every visual power path from this circuit?"):
+            return
+        for item in self.connection_items.values():
+            self.canvas.delete(item)
+        self.connections.clear()
+        self.connection_items.clear()
+        self.selected_connection_id = None
+        self.cancel_wire()
+        self.recalculate()
+        self._schedule_autosave()
+
+    def new_circuit(self) -> None:
+        if self.nodes and not messagebox.askyesno("New circuit", "Clear the current circuit and start over?"):
+            return
+        self.nodes.clear()
+        self.connections.clear()
+        self.selected_node_id = None
+        self.selected_connection_id = None
+        self.pending_source_id = None
+        self.name_entry.delete(0, "end")
+        self.name_entry.insert(0, "Main Base")
+        self.assumptions = dict(DEFAULT_ASSUMPTIONS)
+        self._sync_assumption_entries()
+        self._redraw_all()
+        self.recalculate()
+        self.save_circuit(show_message=False)
+
+    def auto_layout(self) -> None:
+        if not self.nodes:
+            return
+        grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
+        for node in sorted(self.nodes, key=lambda row: str(row.get("component", "")).casefold()):
+            category = _node_category(node, self.catalog)
+            grouped[CATEGORY_ORDER.get(category, 2)].append(node)
+
+        columns = sorted(grouped)
+        for display_column, category_column in enumerate(columns):
+            for row_index, node in enumerate(grouped[category_column]):
+                node["x"] = 90 + display_column * 330
+                node["y"] = 80 + row_index * 135
+        self._redraw_all()
+        self.recalculate()
+        self._schedule_autosave()
 
     def recalculate(self) -> None:
-        self.sync_assumptions()
-        analysis = analyze_setup(self.setup)
-        self.metric_cards["load"].set(f"{analysis.load_rw:.0f} rW", "Placed + planned")
+        setup = setup_from_canvas(self.name_entry.get().strip() or "Main Base", self.nodes, self.assumptions)
+        analysis = analyze_setup(setup)
+        self.metric_cards["load"].set(f"{analysis.load_rw:.0f} rW", f"{len(self.nodes)} placed nodes")
         self.metric_cards["generation"].set(
             f"{analysis.peak_generation_rw:.0f} rW",
-            f"{analysis.utilization_percent:.0f}% peak utilization",
+            f"{analysis.utilization_percent:.0f}% peak use",
         )
         self.metric_cards["average"].set(
-            f"{analysis.estimated_generation_rw:.0f} rW", "Assumption-based"
+            f"{analysis.estimated_generation_rw:.0f} rW",
+            "Solar/wind estimate",
         )
         self.metric_cards["battery"].set(
             f"{analysis.battery_capacity_rwm:.0f} rWm",
-            f"{analysis.battery_output_limit_rw:.0f} rW output limit",
+            f"{analysis.battery_output_limit_rw:.0f} rW output",
         )
         self.metric_cards["runtime"].set(
-            self.format_runtime(analysis.no_generation_runtime_minutes),
-            "At selected charge %",
+            self._format_runtime(analysis.no_generation_runtime_minutes),
+            "At selected charge",
         )
         self.metric_cards["headroom"].set(
             f"{analysis.peak_headroom_rw:+.0f} rW",
-            f"Charging target ≈ {analysis.required_peak_for_charging_rw:.0f} rW",
-        )
-        self.tips_box.delete("1.0", "end")
-        self.tips_box.insert(
-            "1.0",
-            "\n".join(f"• {tip}" for tip in analysis.recommendations),
+            f"Charge target {analysis.required_peak_for_charging_rw:.0f} rW",
         )
 
-    def save_version(self) -> None:
-        self.sync_assumptions()
-        rows = self.setup_rows()
-        family_versions = [
-            ElectricalSetup.from_dict(row).version
-            for row in rows
-            if ElectricalSetup.from_dict(row).name == self.setup.name
-        ]
-        saved = deepcopy(self.setup)
-        saved.version = max(family_versions, default=0) + 1
-        saved.setup_id = ElectricalSetup().setup_id
-        saved.created_at = utc_now_iso()
-        saved.updated_at = utc_now_iso()
-        rows.append(saved.to_dict())
-        self.context.store.set("electrical_setups", rows)
-        self.setup.version = saved.version
-        self.refresh_version_menus()
-        messagebox.showinfo("Saved", f"Saved {saved.name} version {saved.version}.")
+        suggestions = list(analysis.recommendations)
+        suggestions.extend(circuit_recommendations(self.nodes, self.connections, self.catalog))
+        unique: list[str] = []
+        seen: set[str] = set()
+        for suggestion in suggestions:
+            normalized = suggestion.strip()
+            if normalized and normalized not in seen:
+                seen.add(normalized)
+                unique.append(normalized)
+        if not unique:
+            unique = ["The circuit has no obvious power-balance or wiring-path issue."]
+        self._set_textbox(
+            self.recommendation_box,
+            "\n".join(f"{index}. {suggestion}" for index, suggestion in enumerate(unique, start=1)),
+        )
+        if self.selected_node_id:
+            self._refresh_inspector()
 
-    def _setup_by_label(self, label: str) -> ElectricalSetup | None:
-        for row in self.setup_rows():
-            setup = ElectricalSetup.from_dict(row)
-            if self._version_label(setup) == label:
-                return setup
-        return None
+    @staticmethod
+    def _format_runtime(minutes: float) -> str:
+        if math.isinf(minutes):
+            return "Indefinite"
+        if minutes < 60:
+            return f"{minutes:.0f} min"
+        return f"{minutes / 60:.1f} h"
 
-    def compare_versions(self) -> None:
-        left = self._setup_by_label(self.left_version.get())
-        if left is None:
-            self.compare_box.delete("1.0", "end")
-            self.compare_box.insert("1.0", "Save at least one setup version first.")
+    def _redraw_all(self) -> None:
+        self.canvas.delete("node")
+        self.canvas.delete("connector")
+        self.canvas.delete("wire")
+        self.node_items.clear()
+        self.connection_items.clear()
+        for connection in self.connections:
+            self._draw_connection(connection)
+        for node in self.nodes:
+            self._draw_node(node)
+        for connection in self.connections:
+            connection_id = str(connection.get("id"))
+            item = self.connection_items.get(connection_id)
+            if item is not None:
+                self.canvas.tag_lower(item, "node")
+                self.canvas.tag_raise(item, "grid")
+        self._refresh_selection_style()
+        self._refresh_inspector()
+
+    def _node(self, node_id: str | None) -> dict[str, Any] | None:
+        if not node_id:
+            return None
+        return next((node for node in self.nodes if str(node.get("id")) == node_id), None)
+
+    def _connection(self, connection_id: str | None) -> dict[str, Any] | None:
+        if not connection_id:
+            return None
+        return next(
+            (connection for connection in self.connections if str(connection.get("id")) == connection_id),
+            None,
+        )
+
+    def _load_state(self) -> None:
+        state = self.context.store.get(CANVAS_STATE_KEY, {})
+        if isinstance(state, dict) and isinstance(state.get("nodes"), list):
+            self.nodes = [dict(node) for node in state.get("nodes", []) if isinstance(node, dict)]
+            self.connections = [
+                dict(connection)
+                for connection in state.get("connections", [])
+                if isinstance(connection, dict)
+            ]
+            self.assumptions = dict(DEFAULT_ASSUMPTIONS)
+            if isinstance(state.get("assumptions"), dict):
+                self.assumptions.update(state["assumptions"])
+            name = str(state.get("name", "Main Base") or "Main Base")
+        else:
+            name = "Main Base"
+            self._migrate_legacy_setup()
+
+        self.name_entry.delete(0, "end")
+        self.name_entry.insert(0, name)
+        self._sync_assumption_entries()
+        self._normalize_state()
+
+    def _migrate_legacy_setup(self) -> None:
+        rows = self.context.store.get("electrical_setups", [])
+        if not isinstance(rows, list) or not rows:
             return
-        right = (
-            self.setup
-            if self.right_version.get() == "Current working setup"
-            else self._setup_by_label(self.right_version.get())
-        )
-        if right is None:
+        try:
+            setup = ElectricalSetup.from_dict(rows[-1])
+        except Exception:
             return
-        self.compare_box.delete("1.0", "end")
-        self.compare_box.insert("1.0", "\n".join(compare_setups(left, right)))
+        self.assumptions.update(setup.assumptions)
+        for index, item in enumerate(setup.components):
+            self.nodes.append(
+                {
+                    "id": str(uuid4()),
+                    "component": item.component,
+                    "quantity": max(1, item.quantity),
+                    "state": item.state,
+                    "zone": item.zone,
+                    "note": item.note,
+                    "x": 90 + (index % 4) * 300,
+                    "y": 80 + (index // 4) * 130,
+                }
+            )
+
+    def _normalize_state(self) -> None:
+        valid_ids: set[str] = set()
+        normalized_nodes: list[dict[str, Any]] = []
+        for index, node in enumerate(self.nodes):
+            node = dict(node)
+            node_id = str(node.get("id") or uuid4())
+            if node_id in valid_ids:
+                node_id = str(uuid4())
+            node["id"] = node_id
+            node["component"] = str(node.get("component", ""))
+            if node["component"] not in self.catalog:
+                continue
+            node["quantity"] = max(1, int(node.get("quantity", 1) or 1))
+            node["state"] = str(node.get("state", "Planned") or "Planned")
+            node["zone"] = str(node.get("zone", "Main") or "Main")
+            node["x"] = float(node.get("x", 90 + (index % 4) * 300))
+            node["y"] = float(node.get("y", 80 + (index // 4) * 130))
+            valid_ids.add(node_id)
+            normalized_nodes.append(node)
+        self.nodes = normalized_nodes
+
+        normalized_connections: list[dict[str, Any]] = []
+        seen_pairs: set[tuple[str, str]] = set()
+        for connection in self.connections:
+            source = str(connection.get("source", ""))
+            target = str(connection.get("target", ""))
+            pair = (source, target)
+            if source not in valid_ids or target not in valid_ids or source == target or pair in seen_pairs:
+                continue
+            seen_pairs.add(pair)
+            normalized_connections.append(
+                {
+                    "id": str(connection.get("id") or uuid4()),
+                    "source": source,
+                    "target": target,
+                }
+            )
+        self.connections = normalized_connections
+
+    def save_circuit(self, show_message: bool = True) -> None:
+        state = {
+            "name": self.name_entry.get().strip() or "Main Base",
+            "nodes": [dict(node) for node in self.nodes],
+            "connections": [dict(connection) for connection in self.connections],
+            "assumptions": dict(self.assumptions),
+        }
+        self.context.store.set(CANVAS_STATE_KEY, state)
+        if show_message:
+            messagebox.showinfo("Circuit saved", "The visual electrical circuit was saved.")
+
+    def _schedule_autosave(self) -> None:
+        if self._autosave_job is not None:
+            try:
+                self.after_cancel(self._autosave_job)
+            except Exception:
+                pass
+        self._autosave_job = self.after(500, self._autosave)
+
+    def _autosave(self) -> None:
+        self._autosave_job = None
+        self.save_circuit(show_message=False)
+
+    def _sync_assumption_entries(self) -> None:
+        self._replace_entry(self.solar_entry, f"{self.assumptions.get('solar_utilization', 0.35) * 100:.0f}")
+        self._replace_entry(self.wind_entry, f"{self.assumptions.get('wind_utilization', 0.55) * 100:.0f}")
+        self._replace_entry(self.charge_entry, f"{self.assumptions.get('battery_charge_fraction', 1.0) * 100:.0f}")
+
+    @staticmethod
+    def _replace_entry(entry: ctk.CTkEntry, value: str) -> None:
+        entry.delete(0, "end")
+        entry.insert(0, value)
+
+    @staticmethod
+    def _set_textbox(box: ctk.CTkTextbox, text: str) -> None:
+        box.configure(state="normal")
+        box.delete("1.0", "end")
+        box.insert("1.0", text)
+        box.configure(state="disabled")
+
+    def on_context_updated(self) -> None:
+        # Electrical designs are local and do not depend on live Rust+ refreshes.
+        return
