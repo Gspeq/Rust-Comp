@@ -36,6 +36,7 @@ for package in (
     "platformdirs",
     "psutil",
     "rustplus",
+    "rustmap_parser",
     "websockets",
     "webview",
     "push_receiver",

@@ -176,6 +176,7 @@ RESOURCE_DEFINITIONS: dict[str, dict[str, Any]] = {
 
 
 
+
 @dataclass(slots=True)
 class HeatPoint:
     resource: str

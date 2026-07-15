@@ -257,6 +257,34 @@ class WindowsReleaseContractTests(unittest.TestCase):
             "build_windows_release.ps1",
             test_launcher,
         )
+    def test_exact_map_parser_is_declared_and_bundled(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        requirements = (
+            root / "requirements.txt"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            "rust-map-parser==0.2.4",
+            requirements,
+        )
+
+        spec = (
+            root / "packaging" / "RustCompanionPlus.spec"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"rustmap_parser"',
+            spec,
+        )
+
+        windows_app = (
+            root
+            / "rust_companion_plus"
+            / "windows_app.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn(
+            '"rustmap_parser"',
+            windows_app,
+        )
+
 
 if __name__ == "__main__":
     unittest.main()

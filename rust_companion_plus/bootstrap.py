@@ -1363,22 +1363,6 @@ def _parse_args(
 def main(
     argv: list[str] | None = None,
 ) -> int:
-    # RUST_COMPANION_DIAGNOSTICS_BEGIN
-    if os.environ.get(
-        "RUST_COMPANION_DEBUG",
-        "",
-    ).strip().casefold() in {
-        "1",
-        "true",
-        "yes",
-        "on",
-    }:
-        from rust_companion_plus.debug_tools import (
-            install_debug_runtime,
-        )
-
-        install_debug_runtime(sys.modules[__name__])
-    # RUST_COMPANION_DIAGNOSTICS_END
 
     args = _parse_args(argv)
     if args.data_dir:

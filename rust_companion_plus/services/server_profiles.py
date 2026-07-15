@@ -22,6 +22,7 @@ from rust_companion_plus.models import RustCredentials
 from rust_companion_plus.services.builtin_map_analyzer import (
     analyze_map_image,
 )
+from rust_companion_plus.services.exact_map_intelligence import export_exact_map_intelligence
 
 
 PROFILE_STORE_KEY = "saved_server_profiles"
@@ -339,6 +340,10 @@ class ParsedMapResult:
     raw_map_path: Path | None
     map_url: str
     created: bool
+    exact_parser_status: str = ""
+    monument_count: int = 0
+    exact_error: str = ""
+
 
 
 def discover_saved_parsed_map(
@@ -364,6 +369,35 @@ def discover_saved_parsed_map(
     return None
 
 
+
+def _exact_status_for_directory(
+    source_dir: str | Path,
+) -> tuple[str, int, str]:
+    manifest_path = Path(
+        source_dir
+    ) / "map_resolved.json"
+    try:
+        payload = json.loads(
+            manifest_path.read_text(
+                encoding="utf-8-sig"
+            )
+        )
+    except (OSError, json.JSONDecodeError):
+        return "", 0, ""
+
+    exact = (
+        payload.get("exact_parser")
+        if isinstance(
+            payload.get("exact_parser"),
+            dict,
+        )
+        else {}
+    )
+    return (
+        str(exact.get("status") or ""),
+        int(exact.get("monument_count") or 0),
+        str(exact.get("error") or ""),
+    )
 def parse_current_server_map(
     *,
     key: str,
@@ -375,11 +409,7 @@ def parse_current_server_map(
     force_refresh: bool = False,
     root: Path = PROFILE_ROOT,
 ) -> ParsedMapResult:
-    """Analyze the current Rust+ map without an external executable.
-
-    Saved analysis is reused for offline viewing. Online map loading passes
-    force_refresh=True so the newly fetched map is analyzed before display.
-    """
+    """Analyze the map image and parse exact named monuments from .map data."""
     record = (
         profile_record
         if isinstance(profile_record, dict)
@@ -405,6 +435,11 @@ def parse_current_server_map(
     )
 
     if existing is not None and not force_refresh:
+        status, count, error = (
+            _exact_status_for_directory(
+                existing
+            )
+        )
         return ParsedMapResult(
             source_dir=existing,
             raw_map_path=(
@@ -414,6 +449,9 @@ def parse_current_server_map(
             ),
             map_url=map_url,
             created=False,
+            exact_parser_status=status,
+            monument_count=count,
+            exact_error=error,
         )
 
     if map_image is None:
@@ -449,16 +487,103 @@ def parse_current_server_map(
             "The built-in map analyzer did not produce its manifest."
         )
 
+    profile_dir = profile_asset_dir(
+        key,
+        root=root,
+    )
+    raw_map = _find_existing_map_file(
+        map_url=map_url,
+        detection=detection,
+        profile_record=record,
+        profile_dir=profile_dir,
+        world_size=world_size,
+    )
+    exact_status = "unavailable"
+    exact_error = ""
+    monument_count = 0
+
+    if raw_map is None and map_url:
+        try:
+            raw_map = download_current_map(
+                map_url,
+                profile_dir
+                / _map_filename_from_url(map_url),
+            )
+        except Exception as exc:
+            exact_status = "failed"
+            exact_error = str(exc)[:300]
+
+    if raw_map is not None:
+        try:
+            exact = export_exact_map_intelligence(
+                raw_map,
+                output,
+            )
+        except Exception as exc:
+            exact_status = "failed"
+            exact_error = str(exc)[:300]
+        else:
+            exact_status = "ready"
+            monument_count = int(
+                exact.monument_count
+            )
+            if exact.world_size > 0:
+                world_size = int(
+                    exact.world_size
+                )
+    elif not exact_error:
+        exact_error = (
+            "No matching raw .map file or RustMaps download URL "
+            "was available for exact monument naming."
+        )
+
+    if exact_status != "ready":
+        try:
+            manifest = json.loads(
+                analysis.manifest_path.read_text(
+                    encoding="utf-8-sig"
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            manifest = {}
+        manifest["exact_parser"] = {
+            "status": exact_status,
+            "name": "rust-map-parser",
+            "version": "0.2.4",
+            "raw_map_path": (
+                str(raw_map)
+                if raw_map is not None
+                else ""
+            ),
+            "map_url": map_url,
+            "monument_count": 0,
+            "error": exact_error,
+        }
+        analysis.manifest_path.write_text(
+            json.dumps(
+                manifest,
+                indent=2,
+                sort_keys=True,
+            ),
+            encoding="utf-8",
+            newline="\n",
+        )
+
     return ParsedMapResult(
         source_dir=analysis.output_dir,
         raw_map_path=(
-            Path(saved_raw)
-            if saved_raw
+            Path(raw_map)
+            if raw_map is not None
             else None
         ),
         map_url=map_url,
         created=True,
+        exact_parser_status=exact_status,
+        monument_count=monument_count,
+        exact_error=exact_error,
     )
+
+
 
 
 

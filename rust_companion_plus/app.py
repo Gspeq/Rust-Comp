@@ -823,6 +823,22 @@ class RustCompanionApp(ctk.CTk):
         )
 
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
+        ctk.CTkLabel(
+            self.sidebar,
+            text="NAVIGATION",
+            text_color=("#64748b", "#64748b"),
+            font=ctk.CTkFont(
+                size=10,
+                weight="bold",
+            ),
+            anchor="w",
+        ).pack(
+            fill="x",
+            padx=22,
+            pady=(4, 6),
+        )
+
+        self.nav_buttons: dict[str, ctk.CTkButton] = {}
         for name in self.tabs:
             button = ctk.CTkButton(
                 self.sidebar,
@@ -847,6 +863,7 @@ class RustCompanionApp(ctk.CTk):
                 pady=3,
             )
             self.nav_buttons[name] = button
+
 
 
         self.connection_badge = ctk.CTkLabel(
@@ -930,6 +947,7 @@ class RustCompanionApp(ctk.CTk):
         )
         if callable(refresh):
             refresh()
+
 
 
 

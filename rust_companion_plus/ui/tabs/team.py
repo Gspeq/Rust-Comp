@@ -37,7 +37,7 @@ class TeamTab(ctk.CTkFrame):
             header,
             text="Team Intelligence",
             font=ctk.CTkFont(
-                size=28,
+                size=30,
                 weight="bold",
             ),
             anchor="w",
@@ -49,8 +49,8 @@ class TeamTab(ctk.CTkFrame):
         ctk.CTkLabel(
             header,
             text=(
-                "Live Rust+ positions, distance, team spread, "
-                "map grid, monument proximity, and recent deaths."
+                "Named monument locations, exact map metadata, "
+                "team separation, grids, and recent death positions."
             ),
             text_color=MUTED,
             anchor="w",
@@ -106,27 +106,27 @@ class TeamTab(ctk.CTkFrame):
         self._stat_card(
             stats,
             2,
-            "NEAREST TEAMMATE",
-            "nearest",
+            "TEAMMATES AT MONUMENTS",
+            "monuments",
         )
         self._stat_card(
             stats,
             3,
-            "TEAM SPREAD",
-            "spread",
+            "ISOLATED",
+            "isolated",
         )
 
-        note = ctk.CTkLabel(
+        self.source_note = ctk.CTkLabel(
             self,
             text=(
-                "Monument proximity is approximate and uses visible "
-                "monument markers from the last analyzed map."
+                "Load & analyze the current map to resolve exact "
+                "monument names and gameplay metadata."
             ),
             text_color=MUTED,
             anchor="w",
             font=ctk.CTkFont(size=11),
         )
-        note.grid(
+        self.source_note.grid(
             row=2,
             column=0,
             sticky="ew",
@@ -135,7 +135,9 @@ class TeamTab(ctk.CTkFrame):
 
         body = ctk.CTkFrame(
             self,
-            corner_radius=12,
+            corner_radius=14,
+            border_width=1,
+            border_color=("#d8dee9", "#263244"),
         )
         body.grid(
             row=3,
@@ -157,7 +159,7 @@ class TeamTab(ctk.CTkFrame):
 
         self.member_list = ctk.CTkScrollableFrame(
             body,
-            label_text="Live team positions",
+            label_text="Live team locations",
             corner_radius=10,
         )
         self.member_list.grid(
@@ -174,7 +176,7 @@ class TeamTab(ctk.CTkFrame):
 
         self.side_tabs = ctk.CTkTabview(
             body,
-            width=390,
+            width=400,
         )
         self.side_tabs.grid(
             row=0,
@@ -184,6 +186,7 @@ class TeamTab(ctk.CTkFrame):
             pady=12,
         )
         self.side_tabs.add("Live insights")
+        self.side_tabs.add("Monument groups")
         self.side_tabs.add("My last 10 deaths")
 
         self.insights = ctk.CTkTextbox(
@@ -191,6 +194,17 @@ class TeamTab(ctk.CTkFrame):
             corner_radius=8,
         )
         self.insights.pack(
+            fill="both",
+            expand=True,
+            padx=6,
+            pady=6,
+        )
+
+        self.groups = ctk.CTkTextbox(
+            self.side_tabs.tab("Monument groups"),
+            corner_radius=8,
+        )
+        self.groups.pack(
             fill="both",
             expand=True,
             padx=6,
@@ -262,6 +276,14 @@ class TeamTab(ctk.CTkFrame):
         )
         self.stat_values[key] = value
 
+    @staticmethod
+    def _distance_text(
+        value: Any,
+    ) -> str:
+        if value is None:
+            return "unavailable"
+        return f"{float(value):,.0f} m"
+
     def _member_card(
         self,
         row_index: int,
@@ -270,6 +292,7 @@ class TeamTab(ctk.CTkFrame):
         is_self = bool(member.get("is_self"))
         online = bool(member.get("is_online"))
         alive = bool(member.get("is_alive"))
+        isolated = bool(member.get("isolated"))
 
         if not online:
             status = "Offline"
@@ -277,13 +300,16 @@ class TeamTab(ctk.CTkFrame):
         elif not alive:
             status = "Dead"
             status_color = ("#991b1b", "#f87171")
+        elif isolated:
+            status = "Online · Isolated"
+            status_color = ("#92400e", "#fbbf24")
         else:
             status = "Online · Alive"
             status_color = ("#166534", "#4ade80")
 
         card = ctk.CTkFrame(
             self.member_list,
-            corner_radius=10,
+            corner_radius=11,
             border_width=(
                 2 if is_self else 1
             ),
@@ -341,14 +367,41 @@ class TeamTab(ctk.CTkFrame):
         grid = str(member.get("grid") or "?")
         x = float(member.get("x") or 0)
         y = float(member.get("y") or 0)
-        ctk.CTkLabel(
-            card,
-            text=(
+        location_lines = [
+            (
                 f"Grid {grid}   ·   "
                 f"x {x:.0f}, y {y:.0f}"
-            ),
+            )
+        ]
+
+        if is_self:
+            location_lines.append("Current player")
+        else:
+            location_lines.append(
+                f"{self._distance_text(member.get('distance_m'))} from you"
+            )
+
+        nearest_name = str(
+            member.get("nearest_teammate")
+            or ""
+        )
+        nearest_distance = member.get(
+            "nearest_teammate_distance_m"
+        )
+        if nearest_name:
+            location_lines.append(
+                (
+                    f"Nearest teammate: {nearest_name} · "
+                    f"{self._distance_text(nearest_distance)}"
+                )
+            )
+
+        ctk.CTkLabel(
+            card,
+            text="\n".join(location_lines),
             text_color=MUTED,
             anchor="w",
+            justify="left",
         ).grid(
             row=1,
             column=0,
@@ -357,47 +410,52 @@ class TeamTab(ctk.CTkFrame):
             pady=(2, 11),
         )
 
-        distance = member.get("distance_m")
-        if is_self:
-            distance_text = "Current player"
-        elif distance is None:
-            distance_text = "Distance unavailable"
-        else:
-            distance_text = (
-                f"{float(distance):,.0f} m from you"
-            )
-
+        monument_name = str(
+            member.get("monument_name") or ""
+        )
         monument_distance = member.get(
             "monument_distance_m"
         )
-        if monument_distance is None:
+        at_monument = bool(
+            member.get("at_monument")
+        )
+        facts = str(
+            member.get("monument_facts") or ""
+        )
+
+        if not monument_name:
             monument_text = (
-                "Analyze the map to enable monument proximity"
+                "Named map data unavailable\n"
+                "Use Load & analyze current map"
             )
-        elif bool(member.get("near_monument")):
-            monument_text = (
-                "Near a monument marker · "
-                f"~{float(monument_distance):,.0f} m"
-            )
+            monument_color = MUTED
         else:
+            prefix = (
+                "AT"
+                if at_monument
+                else "NEAREST"
+            )
             monument_text = (
-                "Nearest monument marker · "
-                f"~{float(monument_distance):,.0f} m"
+                f"{prefix}: {monument_name}\n"
+                f"{self._distance_text(monument_distance)} "
+                "from monument center"
+            )
+            if facts:
+                monument_text += f"\n{facts}"
+            monument_color = (
+                ("#0369a1", "#7dd3fc")
+                if at_monument
+                else MUTED
             )
 
         ctk.CTkLabel(
             card,
-            text=(
-                f"{distance_text}\n{monument_text}"
-            ),
+            text=monument_text,
             justify="right",
             anchor="e",
-            text_color=(
-                ("#0369a1", "#7dd3fc")
-                if bool(member.get("near_monument"))
-                else MUTED
-            ),
+            text_color=monument_color,
             font=ctk.CTkFont(size=11),
+            wraplength=380,
         ).grid(
             row=1,
             column=1,
@@ -450,14 +508,11 @@ class TeamTab(ctk.CTkFrame):
         total = int(summary.get("total") or 0)
         online = int(summary.get("online") or 0)
         alive = int(summary.get("alive") or 0)
-        nearest_name = str(
-            summary.get("nearest_teammate") or ""
+        at_monuments = int(
+            summary.get("at_monument_count") or 0
         )
-        nearest_distance = summary.get(
-            "nearest_distance_m"
-        )
-        spread = float(
-            summary.get("spread_m") or 0
+        isolated = list(
+            summary.get("isolated_members") or []
         )
 
         self.stat_values["online"].configure(
@@ -466,21 +521,11 @@ class TeamTab(ctk.CTkFrame):
         self.stat_values["alive"].configure(
             text=f"{alive} / {total}"
         )
-        self.stat_values["nearest"].configure(
-            text=(
-                f"{nearest_name}\n"
-                f"{float(nearest_distance):,.0f} m"
-                if nearest_name
-                and nearest_distance is not None
-                else "—"
-            )
+        self.stat_values["monuments"].configure(
+            text=str(at_monuments)
         )
-        self.stat_values["spread"].configure(
-            text=(
-                f"{spread:,.0f} m"
-                if total > 1
-                else "—"
-            )
+        self.stat_values["isolated"].configure(
+            text=str(len(isolated))
         )
 
         self.updated_label.configure(
@@ -491,6 +536,30 @@ class TeamTab(ctk.CTkFrame):
             )
         )
 
+        monument_count = int(
+            summary.get("named_monument_count") or 0
+        )
+        if monument_count:
+            self.source_note.configure(
+                text=(
+                    f"{monument_count} named monuments loaded from "
+                    "the exact .map parser. Distances use serialized "
+                    "world coordinates."
+                ),
+                text_color=("#166534", "#4ade80"),
+            )
+        else:
+            self.source_note.configure(
+                text=(
+                    "Load & analyze the current map to resolve exact "
+                    "monument names and gameplay metadata."
+                ),
+                text_color=MUTED,
+            )
+
+        spread = float(
+            summary.get("spread_m") or 0
+        )
         cluster = (
             "Tight group"
             if spread <= 200
@@ -498,46 +567,87 @@ class TeamTab(ctk.CTkFrame):
             if spread <= 600
             else "Widely split"
         )
-        near_count = int(
-            summary.get("near_monument_count") or 0
+        safe_zone_count = int(
+            summary.get("safe_zone_count") or 0
         )
-        monument_count = int(
-            summary.get("monument_markers") or 0
-        )
-        lines = [
+
+        insight_lines = [
             "TEAM POSITION SUMMARY",
             "",
             f"Your grid: {summary.get('self_grid') or '?'}",
             f"Team center: {summary.get('center_grid') or '?'}",
             f"Formation: {cluster}",
-            f"Live spread: {spread:,.0f} m",
+            f"Maximum live spread: {spread:,.0f} m",
             "",
-            "MONUMENT AWARENESS",
+            "CURRENT RISKS",
             "",
         ]
-        if monument_count:
-            lines.extend(
-                [
-                    (
-                        f"{monument_count} approximate monument "
-                        "markers were detected on the analyzed map."
-                    ),
-                    (
-                        f"{near_count} team member(s) are within "
-                        "about 250 m of a detected marker."
-                    ),
-                ]
+        if isolated:
+            insight_lines.append(
+                "Isolated over 500 m: "
+                + ", ".join(isolated)
             )
         else:
-            lines.append(
-                "Load and analyze the current map to enable "
-                "monument proximity."
+            insight_lines.append(
+                "No online member is isolated over 500 m."
             )
+
+        insight_lines.extend(
+            [
+                (
+                    f"Members at named monuments: "
+                    f"{at_monuments}"
+                ),
+                (
+                    f"Members currently in safe-zone monuments: "
+                    f"{safe_zone_count}"
+                ),
+            ]
+        )
 
         self.insights.delete("1.0", "end")
         self.insights.insert(
             "1.0",
-            "\n".join(lines),
+            "\n".join(insight_lines),
+        )
+
+        groups = dict(
+            summary.get("monument_groups") or {}
+        )
+        group_lines = [
+            "TEAM MEMBERS AT NAMED MONUMENTS",
+            "",
+        ]
+        if not monument_count:
+            group_lines.append(
+                "Analyze the current map to load exact monument names."
+            )
+        elif not groups:
+            group_lines.append(
+                "No online team member is currently inside a "
+                "named monument radius."
+            )
+        else:
+            for monument_name in sorted(
+                groups,
+                key=str.casefold,
+            ):
+                names = [
+                    str(name)
+                    for name in groups[monument_name]
+                ]
+                group_lines.extend(
+                    [
+                        monument_name,
+                        "  " + ", ".join(names),
+                        "",
+                    ]
+                )
+
+        self.groups.delete("1.0", "end")
+        self.groups.insert(
+            "1.0",
+            "\n".join(group_lines),
         )
 
         death_lines = [

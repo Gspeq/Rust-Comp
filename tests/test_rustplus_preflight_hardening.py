@@ -8,7 +8,7 @@ import threading
 import unittest
 from unittest.mock import patch
 
-from rust_companion_plus import bootstrap, debug_tools
+from rust_companion_plus import bootstrap
 from rust_companion_plus.models import RustCredentials
 from rust_companion_plus.services import fcm_registration, server_finder
 from rust_companion_plus.services.pairing import (
@@ -239,19 +239,6 @@ class RustPlusPreflightHardeningTests(unittest.TestCase):
                     allow_empty=True,
                 )
 
-    def test_token_sign_is_safe_but_visible_in_diagnostics(self) -> None:
-        summary = debug_tools._credentials_summary(
-            RustCredentials(
-                host="203.0.113.10",
-                port=28082,
-                steam_id=76561199121283118,
-                player_token=-987654321,
-            )
-        )
-        redacted = debug_tools._redact(summary)
-        rendered = json.dumps(redacted)
-        self.assertIn('"player_token_sign": "negative"', rendered)
-        self.assertNotIn("987654321", rendered)
 
 
 if __name__ == "__main__":

@@ -379,18 +379,21 @@ def _coerce_data_message_mapping(
 
 
 
-def _debug_event(name: str, **fields: Any) -> None:
-    enabled = os.environ.get(
-        "RUST_COMPANION_DEBUG_CONSOLE",
-        "",
-    ).strip().casefold() in {"1", "true", "yes", "on"}
-    if not enabled:
-        return
+def _debug_event(
+    name: str,
+    **fields: Any,
+) -> None:
+    # Low-level events now use the ordinary production logger.
+    # No debug runtime, bundle collector, or bootloader hook is needed.
     try:
-        from rust_companion_plus import debug_tools
-        debug_tools.event(name, **fields)
+        import logging
+
+        logging.getLogger(
+            "rust_companion_plus.pairing"
+        ).debug("%s %s", name, fields)
     except Exception:
         return
+
 
 class PairingNotificationInbox:
     # Supervise and correlate multi-stage Rust+ pairing notifications.

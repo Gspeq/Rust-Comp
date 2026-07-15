@@ -80,6 +80,7 @@ def packaged_self_test() -> int:
         "platformdirs",
         "psutil",
         "rustplus",
+        "rustmap_parser",
         "webview",
         "push_receiver",
     ):

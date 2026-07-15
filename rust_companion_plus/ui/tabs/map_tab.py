@@ -607,6 +607,12 @@ class MapTab(ctk.CTkFrame):
                     result.map_url,
                 )
 
+            if result.raw_map_path is not None:
+                self._set_profile_asset(
+                    "raw_map_path",
+                    str(result.raw_map_path),
+                )
+
             vault = self.context.profile_vault
             if vault is not None:
                 try:
@@ -628,12 +634,25 @@ class MapTab(ctk.CTkFrame):
             )
             self.clear_layer()
             self.render_map()
+            if result.exact_parser_status == "ready":
+                status_text = (
+                    "Current map loaded and parsed with "
+                    f"{result.monument_count} named monuments. "
+                    "Choose a heatmap layer on the right."
+                )
+            else:
+                status_text = (
+                    "Current map loaded with fallback analysis. "
+                    "Named monument data is unavailable"
+                )
+                if result.exact_error:
+                    status_text += (
+                        ": "
+                        + str(result.exact_error)[:150]
+                    )
             self._set_busy(
                 False,
-                (
-                    "Current map loaded and analyzed. "
-                    "Choose a heatmap layer on the right."
-                ),
+                status_text,
             )
             self.context.notify_data_changed()
 

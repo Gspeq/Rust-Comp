@@ -5,7 +5,6 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from rust_companion_plus import debug_tools
 from rust_companion_plus.services.pairing import (
     PairingNotificationInbox,
     PairingRecord,
@@ -95,15 +94,6 @@ class MultiStagePairingTests(unittest.TestCase):
         self.assertEqual("108.61.205.238", record.host)
         self.assertEqual(28084, record.port)
 
-    def test_single_review_report_is_available(self) -> None:
-        rendered = inspect.getsource(debug_tools.create_review_report)
-        self.assertIn("rust-companion-review-", rendered)
-        self.assertIn("latest-review-report.txt", rendered)
-
-        with tempfile.TemporaryDirectory() as temporary:
-            output = debug_tools.create_review_report(Path(temporary))
-            self.assertEqual(".txt", output.suffix)
-            self.assertTrue(output.is_file())
 
 
 if __name__ == "__main__":

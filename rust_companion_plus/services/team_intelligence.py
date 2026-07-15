@@ -10,6 +10,33 @@ from rust_companion_plus.services.resource_heatmaps import (
 )
 
 
+def _safe_int(
+    value: Any,
+    default: int = 0,
+) -> int:
+    """Normalize optional parser metadata without raising."""
+    if value is None:
+        return int(default)
+    if isinstance(value, bool):
+        return int(value)
+
+    if isinstance(value, str):
+        value = value.strip()
+        if not value:
+            return int(default)
+
+    try:
+        return int(value)
+    except (TypeError, ValueError, OverflowError):
+        try:
+            return int(float(value))
+        except (
+            TypeError,
+            ValueError,
+            OverflowError,
+        ):
+            return int(default)
+
 def world_size_for(
     snapshot: Any,
     profile_record: dict[str, Any] | None = None,
@@ -95,7 +122,7 @@ def grid_for_world(
     )
 
 
-def _manifest_path(
+def _parsed_map_dir(
     profile_record: dict[str, Any] | None,
 ) -> Path | None:
     record = (
@@ -113,53 +140,142 @@ def _manifest_path(
     ).strip()
     if not source:
         return None
-    path = Path(source) / "map_resolved.json"
-    return path if path.is_file() else None
+    path = Path(source)
+    return path if path.is_dir() else None
 
 
-def load_monument_markers(
+def load_named_monuments(
     profile_record: dict[str, Any] | None,
 ) -> list[dict[str, Any]]:
-    path = _manifest_path(profile_record)
-    if path is None:
+    source = _parsed_map_dir(profile_record)
+    if source is None:
+        return []
+
+    normalized = source / "named_monuments.json"
+    if normalized.is_file():
+        try:
+            payload = json.loads(
+                normalized.read_text(
+                    encoding="utf-8-sig"
+                )
+            )
+        except (OSError, json.JSONDecodeError):
+            payload = {}
+        rows = payload.get("monuments")
+        if isinstance(rows, list):
+            return [
+                dict(row)
+                for row in rows
+                if isinstance(row, dict)
+            ]
+
+    monuments = source / "monuments.json"
+    if not monuments.is_file():
         return []
 
     try:
         payload = json.loads(
-            path.read_text(encoding="utf-8-sig")
+            monuments.read_text(
+                encoding="utf-8-sig"
+            )
         )
     except (OSError, json.JSONDecodeError):
         return []
 
-    monuments = payload.get("monuments")
-    if not isinstance(monuments, list):
-        return []
-
     rows: list[dict[str, Any]] = []
-    for item in monuments:
-        if not isinstance(item, dict):
+    for raw in payload.get("monuments", []) or []:
+        if not isinstance(raw, dict):
             continue
+        position = (
+            raw.get("position")
+            if isinstance(raw.get("position"), dict)
+            else {}
+        )
+        metadata = (
+            raw.get("metadata")
+            if isinstance(raw.get("metadata"), dict)
+            else {}
+        )
+        classification = (
+            metadata.get("classification")
+            if isinstance(
+                metadata.get("classification"),
+                dict,
+            )
+            else {}
+        )
+        gameplay = (
+            metadata.get("gameplay")
+            if isinstance(
+                metadata.get("gameplay"),
+                dict,
+            )
+            else {}
+        )
         try:
-            fx = float(item.get("x_fraction"))
-            fy = float(item.get("y_fraction"))
+            x = float(position.get("x"))
+            y = float(position.get("z"))
         except (TypeError, ValueError):
             continue
-        if not (
-            0.0 <= fx <= 1.0
-            and 0.0 <= fy <= 1.0
-        ):
-            continue
+
+        size_class = str(
+            classification.get("size_class")
+            or ""
+        ).casefold()
+        radius = {
+            "small": 170.0,
+            "medium": 250.0,
+            "large": 360.0,
+        }.get(size_class, 210.0)
+        if bool(gameplay.get("safe_zone")):
+            radius = max(radius, 300.0)
+
         rows.append(
             {
-                "x_fraction": fx,
-                "y_fraction": fy,
-                "label": str(
-                    item.get("label")
-                    or "Monument marker"
+                "name": str(
+                    metadata.get("display_name")
+                    or raw.get("name")
+                    or "Unnamed Monument"
                 ),
-                "confidence": float(
-                    item.get("confidence") or 0.0
+                "x": x,
+                "y": y,
+                "kind": str(
+                    classification.get("kind")
+                    or "monument"
                 ),
+                "environment": str(
+                    classification.get("environment")
+                    or ""
+                ),
+                "size_class": str(
+                    classification.get("size_class")
+                    or ""
+                ),
+                "safe_zone": bool(
+                    gameplay.get("safe_zone")
+                ),
+                "recycler_count": int(
+                    gameplay.get("recycler_count")
+                    or 0
+                ),
+                "keycard_requirements": [
+                    str(item)
+                    for item in (
+                        gameplay.get(
+                            "keycard_requirements"
+                        )
+                        or []
+                    )
+                ],
+                "puzzle_type": str(
+                    gameplay.get("puzzle_type")
+                    or "none"
+                ),
+                "loot_tier": int(
+                    gameplay.get("loot_tier")
+                    or 0
+                ),
+                "radius_m": radius,
             }
         )
     return rows
@@ -168,34 +284,113 @@ def load_monument_markers(
 def _nearest_monument(
     x: float,
     y: float,
-    *,
-    world_size: int,
     monuments: list[dict[str, Any]],
-) -> tuple[str, float | None]:
-    normalized = world_to_fraction(
-        x,
-        y,
-        world_size,
-    )
-    if normalized is None or not monuments:
-        return "", None
-
-    fx, fy = normalized
-    nearest: tuple[float, dict[str, Any]] | None = None
+) -> tuple[dict[str, Any] | None, float | None]:
+    nearest: tuple[
+        float,
+        dict[str, Any],
+    ] | None = None
     for monument in monuments:
-        distance = math.hypot(
-            fx - float(monument["x_fraction"]),
-            fy - float(monument["y_fraction"]),
-        ) * world_size
+        try:
+            distance = math.hypot(
+                x - float(monument["x"]),
+                y - float(monument["y"]),
+            )
+        except (KeyError, TypeError, ValueError):
+            continue
         if nearest is None or distance < nearest[0]:
             nearest = (distance, monument)
 
     if nearest is None:
+        return None, None
+    return dict(nearest[1]), float(nearest[0])
+
+
+def _nearest_teammate(
+    member: dict[str, Any],
+    members: list[dict[str, Any]],
+) -> tuple[str, float | None]:
+    source_id = str(member.get("steam_id") or "")
+    source_x = float(member.get("x", 0) or 0)
+    source_y = float(member.get("y", 0) or 0)
+    nearest: tuple[float, str] | None = None
+
+    for candidate in members:
+        candidate_id = str(
+            candidate.get("steam_id") or ""
+        )
+        if (
+            not candidate_id
+            or candidate_id == source_id
+            or not bool(candidate.get("is_online"))
+        ):
+            continue
+        distance = math.hypot(
+            source_x
+            - float(candidate.get("x", 0) or 0),
+            source_y
+            - float(candidate.get("y", 0) or 0),
+        )
+        name = str(
+            candidate.get("name")
+            or candidate_id
+            or "Unknown"
+        )
+        if nearest is None or distance < nearest[0]:
+            nearest = (distance, name)
+
+    if nearest is None:
         return "", None
-    return (
-        str(nearest[1].get("label") or "Monument marker"),
-        nearest[0],
+    return nearest[1], nearest[0]
+
+
+def _monument_facts(
+    monument: dict[str, Any] | None,
+) -> str:
+    if not monument:
+        return ""
+
+    facts: list[str] = []
+    if bool(monument.get("safe_zone")):
+        facts.append("Safe zone")
+
+    recyclers = _safe_int(
+        monument.get("recycler_count")
     )
+    if recyclers:
+        facts.append(
+            f"{recyclers} recycler"
+            + ("s" if recyclers != 1 else "")
+        )
+
+    cards = [
+        str(item).title()
+        for item in (
+            monument.get(
+                "keycard_requirements"
+            )
+            or []
+        )
+        if str(item).strip()
+    ]
+    if cards:
+        facts.append(
+            "Cards: " + " + ".join(cards)
+        )
+
+    loot_tier = _safe_int(
+        monument.get("loot_tier")
+    )
+    if loot_tier:
+        facts.append(f"Loot tier {loot_tier}")
+
+    size_class = str(
+        monument.get("size_class") or ""
+    ).strip()
+    if size_class:
+        facts.append(size_class.title())
+
+    return " · ".join(facts)
 
 
 def build_team_intelligence(
@@ -209,20 +404,23 @@ def build_team_intelligence(
             "total": 0,
             "online": 0,
             "alive": 0,
-            "nearest_teammate": "",
-            "nearest_distance_m": None,
             "spread_m": 0.0,
             "center_grid": "?",
             "self_grid": "?",
-            "monument_markers": 0,
-            "near_monument_count": 0,
+            "named_monument_count": 0,
+            "at_monument_count": 0,
+            "occupied_monument_count": 0,
+            "safe_zone_count": 0,
+            "self_monument_name": "",
+            "isolated_members": [],
+            "monument_groups": {},
         }
 
     world_size = world_size_for(
         snapshot,
         profile_record,
     )
-    monuments = load_monument_markers(
+    monuments = load_named_monuments(
         profile_record
     )
     members = [
@@ -263,59 +461,123 @@ def build_team_intelligence(
             str(member.get("steam_id") or "")
             == str(steam_id)
         )
-        distance = None
+        distance_from_self = None
         if (
             not is_self
             and self_x is not None
             and self_y is not None
         ):
-            distance = math.hypot(
+            distance_from_self = math.hypot(
                 x - self_x,
                 y - self_y,
             )
 
-        monument_label, monument_distance = (
+        nearest_monument, monument_distance = (
             _nearest_monument(
                 x,
                 y,
-                world_size=world_size,
-                monuments=monuments,
+                monuments,
             )
         )
-
-        rows.append(
-            {
-                "name": str(
-                    member.get("name")
-                    or member.get("steam_id")
-                    or "Unknown"
-                ),
-                "steam_id": str(
-                    member.get("steam_id") or ""
-                ),
-                "is_self": is_self,
-                "is_online": bool(
-                    member.get("is_online")
-                ),
-                "is_alive": bool(
-                    member.get("is_alive", True)
-                ),
-                "x": x,
-                "y": y,
-                "grid": grid_for_world(
-                    x,
-                    y,
-                    world_size,
-                ),
-                "distance_m": distance,
-                "monument_label": monument_label,
-                "monument_distance_m": monument_distance,
-                "near_monument": (
-                    monument_distance is not None
-                    and monument_distance <= 250.0
-                ),
-            }
+        radius = (
+            float(
+                nearest_monument.get("radius_m")
+                or 210.0
+            )
+            if nearest_monument is not None
+            else 0.0
         )
+        at_monument = bool(
+            monument_distance is not None
+            and monument_distance <= radius
+        )
+
+        nearest_name, nearest_distance = (
+            _nearest_teammate(
+                {
+                    **member,
+                    "x": x,
+                    "y": y,
+                },
+                members,
+            )
+        )
+        isolated = bool(
+            member.get("is_online")
+            and nearest_distance is not None
+            and nearest_distance > 500.0
+        )
+
+        row = {
+            "name": str(
+                member.get("name")
+                or member.get("steam_id")
+                or "Unknown"
+            ),
+            "steam_id": str(
+                member.get("steam_id") or ""
+            ),
+            "is_self": is_self,
+            "is_online": bool(
+                member.get("is_online")
+            ),
+            "is_alive": bool(
+                member.get("is_alive", True)
+            ),
+            "x": x,
+            "y": y,
+            "grid": grid_for_world(
+                x,
+                y,
+                world_size,
+            ),
+            "distance_m": distance_from_self,
+            "nearest_teammate": nearest_name,
+            "nearest_teammate_distance_m": (
+                nearest_distance
+            ),
+            "isolated": isolated,
+            "monument_name": (
+                str(
+                    nearest_monument.get("name")
+                    or ""
+                )
+                if nearest_monument is not None
+                else ""
+            ),
+            "monument_distance_m": monument_distance,
+            "monument_radius_m": radius,
+            "at_monument": at_monument,
+            "monument_facts": _monument_facts(
+                nearest_monument
+            ),
+            "monument_safe_zone": bool(
+                nearest_monument.get("safe_zone")
+                if nearest_monument
+                else False
+            ),
+            "monument_recycler_count": _safe_int(
+                nearest_monument.get(
+                    "recycler_count"
+                )
+                if nearest_monument
+                else 0
+            ),
+            "monument_keycards": list(
+                nearest_monument.get(
+                    "keycard_requirements"
+                )
+                or []
+            )
+            if nearest_monument
+            else [],
+            "monument_loot_tier": _safe_int(
+                nearest_monument.get("loot_tier")
+                if nearest_monument
+                else 0
+            ),
+        }
+        rows.append(row)
 
     rows.sort(
         key=lambda row: (
@@ -359,16 +621,18 @@ def build_team_intelligence(
             world_size,
         )
 
-    nearest_rows = [
-        row
-        for row in rows
-        if row["distance_m"] is not None
-    ]
-    nearest = min(
-        nearest_rows,
-        key=lambda row: float(row["distance_m"]),
-        default=None,
-    )
+    monument_groups: dict[str, list[str]] = {}
+    for row in rows:
+        if (
+            not row["is_online"]
+            or not row["at_monument"]
+        ):
+            continue
+        name = str(row["monument_name"])
+        monument_groups.setdefault(
+            name,
+            [],
+        ).append(str(row["name"]))
 
     summary = {
         "total": len(rows),
@@ -380,33 +644,64 @@ def build_team_intelligence(
             bool(row["is_alive"])
             for row in rows
         ),
-        "nearest_teammate": (
-            str(nearest["name"])
-            if nearest is not None
-            else ""
-        ),
-        "nearest_distance_m": (
-            float(nearest["distance_m"])
-            if nearest is not None
-            else None
-        ),
         "spread_m": spread,
         "center_grid": center_grid,
-        "self_grid": (
-            next(
-                (
-                    str(row["grid"])
-                    for row in rows
-                    if row["is_self"]
-                ),
-                "?",
-            )
+        "self_grid": next(
+            (
+                str(row["grid"])
+                for row in rows
+                if row["is_self"]
+            ),
+            "?",
         ),
-        "monument_markers": len(monuments),
-        "near_monument_count": sum(
-            bool(row["near_monument"])
+        "named_monument_count": len(monuments),
+        "at_monument_count": sum(
+            bool(
+                row["is_online"]
+                and not row["is_self"]
+                and row["at_monument"]
+            )
             for row in rows
         ),
+        "occupied_monument_count": len(
+            {
+                str(row["monument_name"])
+                for row in rows
+                if (
+                    row["is_online"]
+                    and row["at_monument"]
+                    and str(
+                        row["monument_name"]
+                    ).strip()
+                )
+            }
+        ),
+        "safe_zone_count": sum(
+            bool(
+                row["is_online"]
+                and not row["is_self"]
+                and row["at_monument"]
+                and row["monument_safe_zone"]
+            )
+            for row in rows
+        ),
+        "self_monument_name": next(
+            (
+                str(row["monument_name"])
+                for row in rows
+                if (
+                    row["is_self"]
+                    and row["at_monument"]
+                )
+            ),
+            "",
+        ),
+        "isolated_members": [
+            str(row["name"])
+            for row in rows
+            if row["isolated"]
+        ],
+        "monument_groups": monument_groups,
         "world_size": world_size,
     }
     return rows, summary

@@ -248,6 +248,7 @@ class SavedServerProfileTests(unittest.TestCase):
         self.assertNotIn("MapParser.exe", source)
 
 
+
     def test_app_has_close_save_prompt_and_profile_mode(self) -> None:
         source = inspect.getsource(RustCompanionApp)
         self.assertIn("WM_DELETE_WINDOW", source)
