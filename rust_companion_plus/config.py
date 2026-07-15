@@ -27,3 +27,8 @@ APP_DATA_DIR = application_data_dir()
 STORE_PATH = APP_DATA_DIR / "store.json"
 
 FCM_CONFIG_PATH = APP_DATA_DIR / "rustplus_fcm.json"
+
+LOG_DIR = APP_DATA_DIR / "logs"
+CACHE_DIR = APP_DATA_DIR / "cache"
+LOG_DIR.mkdir(parents=True, exist_ok=True)
+CACHE_DIR.mkdir(parents=True, exist_ok=True)

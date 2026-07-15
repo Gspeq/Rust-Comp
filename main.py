@@ -1,4 +1,4 @@
-from rust_companion_plus.bootstrap import main
+from rust_companion_plus.windows_app import main
 
 
 if __name__ == "__main__":

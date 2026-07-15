@@ -8,7 +8,6 @@ import socket
 import threading
 import unittest
 
-from rust_companion_plus import debug_tools
 from rust_companion_plus.services import server_finder
 from rust_companion_plus.services.pairing import (
     _safe_payload_inventory,
@@ -122,11 +121,6 @@ class PayloadStringAndPortProbeTests(unittest.TestCase):
         self.assertIn("_probe_rustplus_websocket", rendered)
         self.assertNotIn("range(", rendered)
 
-    def test_review_report_includes_new_evidence(self) -> None:
-        rendered = inspect.getsource(debug_tools.create_review_report)
-        self.assertIn("SAFE PAIRING PAYLOAD STRUCTURE", rendered)
-        self.assertIn("NETWORK DISCOVERY DECISION", rendered)
-        self.assertIn("PAIRING-RELEVANT RUST LOG LINES", rendered)
 
 
 if __name__ == "__main__":

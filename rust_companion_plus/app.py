@@ -14,6 +14,7 @@ from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerS
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
 from rust_companion_plus.services.server_profiles import ServerProfileVault
 from rust_companion_plus.storage import JsonStore
+from rust_companion_plus.windows_integration import request_uninstall
 from rust_companion_plus.ui.common import ACCENT
 from rust_companion_plus.ui.tabs.dashboard import DashboardTab
 from rust_companion_plus.ui.tabs.electrical import ElectricalTab
@@ -641,6 +642,24 @@ class RustCompanionApp(ctk.CTk):
             fill="x",
             padx=22,
             pady=20,
+        )
+
+        self.uninstall_button = ctk.CTkButton(
+            self.sidebar,
+            text="Uninstall Rust Companion+",
+            anchor="w",
+            fg_color="transparent",
+            hover_color=("#fee2e2", "#3f1d24"),
+            border_width=1,
+            border_color=("#b91c1c", "#ef4444"),
+            text_color=("#991b1b", "#fca5a5"),
+            command=lambda: request_uninstall(self),
+        )
+        self.uninstall_button.pack(
+            side="bottom",
+            fill="x",
+            padx=12,
+            pady=(0, 4),
         )
 
         self.current_tab = ""

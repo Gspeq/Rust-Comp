@@ -11,3 +11,7 @@ build/
 debug_bundles/
 release/
 .hotfix-backups/
+.release-venv/
+.release-build/
+packaging/rust_companion_plus.ico
+packaging/windows_version_info.txt

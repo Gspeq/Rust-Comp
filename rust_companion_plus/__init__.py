@@ -1,3 +1,3 @@
 """Rust Companion+ package."""
 
-__version__ = "0.3.0"
+from rust_companion_plus.version import __version__
