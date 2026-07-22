@@ -47,19 +47,18 @@ class GuideAndNavigationTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertEqual(render_guide_markdown(), guide)
 
-    def test_guide_button_is_global_and_navigation_header_is_gone(self) -> None:
-        app = (
-            self.root
-            / "rust_companion_plus"
-            / "app.py"
+    def test_guide_button_is_dashboard_only_and_navigation_header_is_gone(self) -> None:
+        app = (self.root / "rust_companion_plus" / "app.py").read_text(encoding="utf-8")
+        dashboard = (
+            self.root / "rust_companion_plus" / "ui" / "tabs" / "dashboard.py"
         ).read_text(encoding="utf-8")
         self.assertNotIn('text="NAVIGATION"', app)
         self.assertNotIn('"NAVIGATION"', app)
         self.assertIn("GuideWindow", app)
-        self.assertIn('text="? Guide"', app)
-        self.assertIn("self.guide_button.lift()", app)
+        self.assertNotIn("self.guide_button", app)
         self.assertIn("def open_guide", app)
-
+        self.assertIn('text="? Feature Guide"', dashboard)
+        self.assertIn("open_feature_guide", dashboard)
 
 class CompactShopTests(unittest.TestCase):
     def setUp(self) -> None:

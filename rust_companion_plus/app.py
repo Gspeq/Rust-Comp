@@ -649,7 +649,8 @@ class AppContext:
 
 class RustCompanionApp(ctk.CTk):
     DETECTION_INTERVAL_MS = 10_000
-    RUSTPLUS_INTERVAL_MS = 3_000
+    # One-second live snapshots reduce the gap between the last reported alive position and death detection without overlapping requests.
+    RUSTPLUS_INTERVAL_MS = 1_000
     BATTLEMETRICS_INTERVAL_SECONDS = 120
 
 
@@ -823,25 +824,6 @@ class RustCompanionApp(ctk.CTk):
 
 
         self.guide_window = GuideWindow(self)
-        self.guide_button = ctk.CTkButton(
-            self.content,
-            text="? Guide",
-            width=72,
-            height=28,
-            corner_radius=8,
-            fg_color=("gray85", "#1f2937"),
-            hover_color=("gray75", "#334155"),
-            text_color=("#111827", "#f8fafc"),
-            command=lambda: self.open_guide(
-                self.current_tab or "Overview"
-            ),
-        )
-        self.guide_button.place(
-            relx=1.0,
-            x=-28,
-            y=10,
-            anchor="ne",
-        )
 
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
         for name in self.tabs:
@@ -939,10 +921,6 @@ class RustCompanionApp(ctk.CTk):
             pady=20,
         )
 
-        self.guide_button.configure(
-            command=lambda selected=name: self.open_guide(selected)
-        )
-        self.guide_button.lift()
 
         for label, button in self.nav_buttons.items():
             active = label == name
@@ -1031,6 +1009,25 @@ class RustCompanionApp(ctk.CTk):
             settings=settings,
             on_open_shops=lambda: self.show_tab("Shops"),
             force=force,
+        )
+
+
+    def publish_device_alerts(
+        self,
+        alerts: list[DealAlert],
+    ) -> None:
+        settings = normalize_notification_settings(
+            self.context.store.get(
+                NOTIFICATION_SETTINGS_KEY,
+                {},
+            )
+        )
+        self.deal_notifications.publish(
+            alerts,
+            settings=settings,
+            on_action=lambda: self.show_tab("Smart Devices"),
+            action_label="Open Smart Devices",
+            force=True,
         )
 
 

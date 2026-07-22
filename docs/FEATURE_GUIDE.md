@@ -1,271 +1,217 @@
 # Rust Companion+ Feature Guide
 
-Guide version: 0.7.0
+Guide version: 0.8.0
 Last updated: 2026-07-22
 
-This file is generated from the same guide catalog used by the in-application Guide button. Update the catalog whenever a tab or feature changes, then regenerate this document.
+This file is generated from the same catalog opened by the Dashboard Feature Guide button. Update the catalog whenever a tab or feature changes, then regenerate this document.
 
 ## Overview
 
-The Dashboard combines connection status, Rust+ pairing, server intelligence, marketplace notification settings, and the live event timeline.
+The Dashboard combines server status, Rust+ pairing, the complete feature guide, marketplace notification presets, intelligence, and the live event timeline.
 
-**When useful:** Use it first when opening the app, changing servers, checking whether Rust+ is live, or changing marketplace alert behavior.
+**When useful:** Use it first after launch, when changing servers, configuring alerts, or learning what another page can do.
+
+### Feature Guide
+
+The Dashboard-only Guide button opens this maintained catalog for every tab and major feature.
+
+**When useful:** Useful when setting up a system for the first time or checking limitations before relying on it.
 
 ### Server metrics
 
-Shows server name, population, detected game endpoint, and last update.
+Shows server name, population, detected endpoint, and the latest refresh time.
 
-**When useful:** Useful for confirming that the app is reading the intended server.
+**When useful:** Useful for confirming that the intended live or saved server is active.
 
 ### Rust+ pairing
 
-Stores the companion host, app port, Steam ID, and player token for the active server.
+Stores the companion host, app port, Steam ID, and player token for the active server profile.
 
-**When useful:** Useful after pairing a server or when repairing an incomplete profile.
+**When useful:** Useful after pairing or when repairing an incomplete server-specific profile.
 
-### Connect and refresh
+### Marketplace notification presets
 
-Requests a fresh Rust+ snapshot using the currently saved pairing profile.
+Filters alerts by All, Basic, Mid tier, High tier, Endgame, or custom watched items, plus rating, stock, cost, blueprint, sound, repeat, Windows, and in-app settings.
 
-**When useful:** Useful when cached information is visible but live data has not connected.
+**When useful:** Useful for matching alerts to your current wipe progression and avoiding irrelevant notifications.
 
-### Re-detect server
+### Server intelligence and timeline
 
-Rechecks the running Rust process, logs, sockets, and public server metadata.
+Explains endpoint evidence and records Rust+, population, team, smart-device, and world-event changes.
 
-**When useful:** Useful after joining a different server or when the detected endpoint looks wrong.
-
-### Marketplace notifications
-
-Controls alert level, sound, popup duration, repeat suppression, and alerts per scan.
-
-**When useful:** Useful when tuning how often STEAL, CAN'T MISS, and possible listing-error alerts appear.
-
-### Server intelligence
-
-Explains why the endpoint was selected and shows accepted, rejected, and public evidence.
-
-**When useful:** Useful for troubleshooting server detection or Rust+ endpoint differences.
-
-### Live timeline
-
-Records population, team, event, detection, and Rust+ changes.
-
-**When useful:** Useful for reviewing what changed while using other tabs.
+**When useful:** Useful for troubleshooting and reviewing what changed while another page was open.
 
 
 ## Map
 
-Map Intelligence combines the server map, Rust+ markers, optional resource analysis, zoom controls, and starter-base recommendations.
+Map Intelligence combines live or cached maps, interactive zoom and pan, server-marker visibility, multiple quick overlays, and starter-base analysis.
 
-**When useful:** Use it while planning routes, deciding where to build, locating shops or events, and comparing resource access against player traffic.
+**When useful:** Use it for route planning, build-location comparison, resource access, and inspecting a specific area.
 
-### Live and cached map
+### Zoom and pan
 
-Uses the current Rust+ map when available and saved map assets when offline.
+Use Fit through 8x zoom, +/- controls, the mouse wheel, drag-to-pan, and double-click recentering.
 
-**When useful:** Useful for planning with Rust closed or during a temporary Rust+ outage.
+**When useful:** Useful when a full-map view is too small to inspect terrain or a specific grid.
 
-### Zoom and recenter
+### Marker toggle
 
-Supports fit and fixed zoom levels, mouse-wheel zoom, and click-to-center.
+Shows or hides Rust+ server icons without deleting marker data.
 
-**When useful:** Useful when inspecting a specific grid or shop location.
+**When useful:** Useful when vending, event, or team icons obscure terrain.
 
-### Server icon visibility
+### Quick overlay toggles
 
-Shows or hides Rust+ map markers without removing the underlying data.
+Allows several commonly useful resource, road, water, and monument layers to be enabled together while retaining the detailed layer selector.
 
-**When useful:** Useful when markers obscure terrain or resource overlays.
-
-### Resource overlays
-
-Displays parsed or estimated resource and terrain layers when available.
-
-**When useful:** Useful for comparing stone, metal, sulfur, roads, water, and biome access.
+**When useful:** Useful for comparing competing location factors in one map view.
 
 ### Starter spot recommendation
 
-Scores candidate areas using resources, roads, terrain, water, monuments, events, shops, and edge risk.
+Scores candidate areas using resources, roads, terrain, water, monuments, events, shops, and map-edge risk, then zooms to the strongest estimate.
 
-**When useful:** Useful at wipe start or after relocating; it is a planning estimate, not a safety guarantee.
+**When useful:** Useful at wipe start or after relocating; it is not a player-safety guarantee.
 
 
 ## Team
 
-Team Intelligence turns Rust+ team positions and status changes into a readable operational view.
+Team Intelligence turns Rust+ team states and positions into a readable operational view and stores the local player's latest death positions.
 
-**When useful:** Use it to check who is online or alive, find isolated teammates, review recent deaths, and understand nearby map context.
+**When useful:** Use it for teammate coordination, isolation checks, and returning toward a recent death location.
 
-### Team status
+### Team status and isolation
 
-Shows online, alive, position, and last-known state for Rust+ team members.
+Shows online/alive state, last position, distances, and separated teammates.
 
-**When useful:** Useful before roaming or coordinating a return to base.
+**When useful:** Useful before roaming or deciding who needs support.
 
-### Distance and isolation
+### Latest deaths
 
-Compares teammate positions and identifies members far from the group.
+Detects the local player's Rust+ alive-to-dead transition on a one-second snapshot cadence and stores the last known pre-death coordinates.
 
-**When useful:** Useful for finding separated teammates or deciding who needs support.
+**When useful:** Useful for recovery routes; the position remains approximate because Rust+ reports snapshots rather than an exact death packet.
 
 ### Monument context
 
-Associates team positions with nearby named monuments when exact map data exists.
+Associates team positions with named monuments when exact parsed map metadata is available.
 
-**When useful:** Useful when teammates report only their map position.
-
-### My last deaths
-
-Stores recent automatic Rust+ alive-to-dead transitions for the local player.
-
-**When useful:** Useful for returning to an approximate death area.
+**When useful:** Useful when a teammate reports only a position or vague landmark.
 
 
 ## Shops
 
-The marketplace searches Rust+ vending listings, compares equivalent trades, rates deals in plain text, and maps matching shop locations.
+The marketplace searches Rust+ vending offers, marks blueprints, rates equivalent trades in text, sends configurable alerts, and shows the selected shop's exact grid cell.
 
-**When useful:** Use it when buying or selling items, checking whether a price is unusual, or finding the closest shop offering a specific trade.
+**When useful:** Use it when buying or selling, watching progression-specific loot, or checking whether a price is unusually strong.
 
-### Buy, payment, and location searches
+### Compact listings and BP marking
 
-Filters the item being sold, the requested payment item, and shop/grid text.
+Important columns fit without sideways scrolling, and blueprint items are visibly prefixed with BP.
 
-**When useful:** Useful for narrowing a large marketplace without hiding important columns.
+**When useful:** Useful for avoiding blueprint/item confusion while scanning many offers.
 
-### BP marking
+### Best Value
 
-Blueprint listings stay visible and are prefixed with BP in the sold or payment item field.
+Compares normalized unit cost only within identical item, payment, and blueprint markets using live peers, rolling history, stock, rank, confidence, and robust outlier detection.
 
-**When useful:** Useful for avoiding confusion between a blueprint and the crafted item.
+**When useful:** Useful for finding strong deals without comparing unrelated trades.
 
-### Best value
+### Fixed grid map
 
-Ranks equivalent trades using unit price, live peers, rolling history, stock, rank, confidence, and robust outlier detection.
+Selecting an offer shows only that shop's grid section at a fixed zoom with one shop marker and no unrelated icons.
 
-**When useful:** Useful for finding strong offers without comparing unrelated currencies or blueprint states.
+**When useful:** Useful for recognizing the immediate terrain around the destination without a cluttered full map.
 
-### Deal ratings
+### Loot and item alerts
 
-Labels listings as possible error, can't miss, steal, good value, fair, overpriced, unpriced, or out of stock.
+Dashboard settings can filter by progression preset, specific item names or IDs, any-listing watches, minimum stock, maximum cost, blueprints, deal rating, and delivery path.
 
-**When useful:** Useful for understanding the recommendation without relying on row color.
-
-### Advanced limits
-
-Optionally limits results by minimum stock or maximum total cost.
-
-**When useful:** Useful after the basic searches already identify the desired market.
-
-### Shop minimap
-
-Shows the selected shop and other matching locations on a focused map.
-
-**When useful:** Useful for choosing between several comparable offers.
-
-### Marketplace alerts
-
-Sends new high-value or possible listing-error notices in-app and through Windows notifications.
-
-**When useful:** Useful while Rust is fullscreen or while viewing another app tab.
+**When useful:** Useful while Rust is fullscreen or while waiting for a rare item to appear.
 
 
 ## Electrical
 
-Electrical Planner offers a fast natural-language power estimate and a complete advanced circuit workspace.
+Electrical opens directly into the complete visual circuit designer. The former basic planner has been removed and its power-balance information remains integrated into the canvas metrics and recommendations.
 
-**When useful:** Use it before building a circuit, when diagnosing insufficient power, or when planning batteries and generation for a base.
+**When useful:** Use it before building, while diagnosing a circuit, or when hardening an endgame defense and automation network.
 
-### Simple Planner
+### Visual circuit designer
 
-Parses common Rust electrical components from a written description and estimates load, generation, storage, and runtime.
+Drag or click equipment, wire outputs to inputs, arrange nodes, edit quantity/state/zone, and save the complete circuit.
 
-**When useful:** Useful for quick plans without drawing every wire.
+**When useful:** Useful whenever topology matters instead of only component totals.
 
-### Recommendations
+### Integrated power model
 
-Highlights generation shortages, battery limits, excess capacity, and likely substitutions.
+Shows load, peak and average generation, battery storage/output, no-generation runtime, and charging headroom directly above the canvas.
 
-**When useful:** Useful for correcting a plan before spending resources.
+**When useful:** Useful for determining whether a circuit works through night, weather, or generator loss.
 
-### Advanced Circuit
+### Strategic suggestions
 
-Preserves the visual circuit editor, wiring paths, branch analysis, loop detection, disconnected-load checks, and saved layouts.
+Adds topology fixes plus redundancy, branch priority, turret isolation, Smart Alarm, Storage Monitor, production timer, zone isolation, and single-point-failure advice.
 
-**When useful:** Useful when exact topology matters or the simple estimate is not enough.
+**When useful:** Useful for turning a merely powered circuit into a maintainable and raid-resistant system.
 
 
 ## Smart Devices
 
-The Smart Devices hub stores paired Rust+ entity IDs and performs grouped status and control operations.
+Smart Base Control turns paired Rust+ entities into named devices, logical systems, verified scenes, local rules, and an activity log.
 
-**When useful:** Use it to monitor or control supported switches, alarms, storage monitors, and other Rust+ entities from one place.
+**When useful:** Use it to operate defense zones, lights, lockdown circuits, industry, alarms, and storage monitors from one console.
 
-### Saved devices
+### Devices
 
-Stores entity ID, name, zone, and favorite status separately for each server.
+Stores entity ID, name, zone, role, logical system, favorite state, and the latest Rust+ status fields; supports batch refresh and ON/OFF.
 
-**When useful:** Useful for turning numeric entity IDs into a readable device list.
+**When useful:** Useful for replacing raw entity IDs with an organized base-control inventory.
 
-### Status reads
+### Systems
 
-Reads selected or all devices in one Rust+ socket session.
+Groups selected devices into a named zone or purpose such as North Defense, Core Lights, or Furnace Bank, then refreshes or controls the whole group.
 
-**When useful:** Useful for checking state, capacity, protection, expiration, and API errors.
+**When useful:** Useful for maintenance and logical control without selecting individual entities every time.
 
-### Batch control
+### Scenes
 
-Turns selected controllable entities on or off together.
+Stores multi-device ON/OFF states such as Raid Mode, Offline Mode, Quiet Mode, Industry Mode, or Emergency Lockdown, with preview, confirmation, and post-run verification.
 
-**When useful:** Useful for grouped lights, defenses, doors, or alarm systems when the Rust+ API supports control.
+**When useful:** Useful for changing many circuits safely with one action.
 
-### Favorites and zones
+### Rules and activity
 
-Sorts important devices first and groups them by room or purpose.
+Evaluates value transitions, capacity thresholds, status changes, and entity errors after refresh; rules can notify or run a scene when explicitly armed and respect cooldowns.
 
-**When useful:** Useful in bases with many paired devices.
+**When useful:** Useful for low-ammo/storage warnings and controlled local automation. Rules only run while the app and Rust+ connection are active.
 
 
 ## Saved Servers
 
-Saved Servers manages offline server archives, pairing metadata, cached maps, and per-server workspace data.
+Saved Servers manages offline server archives, pairing metadata, cached maps, and server-specific workspace data.
 
-**When useful:** Use it to reopen a server with Rust closed, remove an obsolete profile, or inspect what the app has saved.
+**When useful:** Use it to reopen cached data with Rust closed or remove profiles for servers you no longer play.
 
 ### Open saved profile
 
-Loads cached server, team, map, shop, timeline, and workspace data.
+Loads cached server, team, map, shop, timeline, electrical, and smart-control workspace data.
 
-**When useful:** Useful when Rust is closed or live Rust+ is temporarily unavailable.
+**When useful:** Useful during a Rust+ outage or with Rust closed.
 
-### Remove one or all
+### Delete and retention
 
-Deletes selected profile metadata and associated cached assets.
+Removes one or all saved profiles and automatically purges profiles with no live update for 30 days.
 
-**When useful:** Useful after leaving a server or clearing old data.
-
-### Automatic retention
-
-Removes profiles with no live update for 30 days.
-
-**When useful:** Useful for keeping the archive from accumulating abandoned servers.
+**When useful:** Useful for keeping credentials and cached assets limited to current servers.
 
 
 ## Notes
 
-Notes provides a server-aware place to record plans, reminders, codes, routes, and other information that Rust+ does not supply.
+Notes stores server-aware plans, reminders, routes, tasks, and observations that Rust+ cannot provide.
 
-**When useful:** Use it for raid plans, build tasks, teammate reminders, shopping lists, or anything that should remain with the companion workspace.
+**When useful:** Use it for build tasks, raid plans, teammate reminders, shopping lists, or manual intelligence.
 
 ### Persistent notes
 
-Stores written information in the app's local data.
+Keeps written information in local application data and the active server workspace.
 
-**When useful:** Useful for information you need across multiple play sessions.
-
-### Manual context
-
-Complements automated Rust+ information with details only the player knows.
-
-**When useful:** Useful for plans, agreements, and observations that cannot be detected automatically.
+**When useful:** Useful for details needed across multiple sessions.

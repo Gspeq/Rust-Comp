@@ -152,3 +152,21 @@ Marketplace alerts use both the existing non-modal in-app card and a native
 Windows notification-area message. The Windows path is intended to remain
 visible while Rust is fullscreen and to place the alert in Windows Notification
 Center, subject to the user's Windows notification and Do Not Disturb settings.
+
+## Endgame automation and precision controls
+
+<!-- ENDGAME_AUTOMATION_PRECISION_080 -->
+
+Smart Base Control now supports named systems, verified multi-device scenes,
+explicitly armed local rules, cooldowns, and an activity log. Electrical opens
+directly into the full visual circuit designer with additional redundancy and
+endgame topology advice. Rust+ snapshots run every second to reduce latest-death
+position lag without overlapping requests. The main map supports visible zoom,
+pan, marker controls, and quick multi-layer overlays; the shop map is a fixed,
+icon-free view of only the selected shop grid.
+
+The Feature Guide is opened only from the Dashboard. Marketplace notifications
+support progression presets, specific watched items, stock/cost and blueprint
+filters, and separate Windows/fullscreen and in-app delivery controls. The
+bootstrapper performs local source-layout and AppData write checks and exposes
+`--bootstrap-self-check` for diagnostics.

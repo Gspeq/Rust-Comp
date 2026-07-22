@@ -95,11 +95,10 @@ class ShopMinimapMatchingTests(unittest.TestCase):
         self.assertEqual(["Alpha", "Bravo"], [item.shop for item in matches])
         self.assertIs(selected, matches[0])
 
-    def test_selected_shop_is_orange_and_other_match_is_green(self) -> None:
+    def test_selected_shop_is_centered_and_other_icons_are_omitted(self) -> None:
         selected = row("Alpha", "G6", 1000, 3000)
         other = row("Bravo", "T20", 3000, 1000)
         base = Image.new("RGBA", (400, 400), (0, 0, 0, 255))
-
         result = render_shop_minimap(
             base,
             [selected, other],
@@ -107,20 +106,19 @@ class ShopMinimapMatchingTests(unittest.TestCase):
             4000,
             output_size=(200, 200),
         )
-
         self.assertEqual((200, 200), result.size)
-        selected_region = {
+        center_region = {
             result.getpixel((x, y))[:3]
-            for x in range(43, 57)
-            for y in range(43, 57)
+            for x in range(86, 115)
+            for y in range(86, 115)
         }
-        other_region = {
+        self.assertIn((245, 158, 11), center_region)
+        all_colors = {
             result.getpixel((x, y))[:3]
-            for x in range(143, 157)
-            for y in range(143, 157)
+            for x in range(200)
+            for y in range(200)
         }
-        self.assertIn((245, 158, 11), selected_region)
-        self.assertIn((34, 197, 94), other_region)
+        self.assertNotIn((34, 197, 94), all_colors)
 
     def test_missing_base_map_still_renders_coordinate_grid(self) -> None:
         selected = row("Alpha", "G6", 1000, 3000)

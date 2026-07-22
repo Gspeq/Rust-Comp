@@ -35,6 +35,11 @@ from rust_companion_plus.services.profile_retention import (
     purge_expired_profiles,
 )
 from rust_companion_plus.storage import JsonStore
+from rust_companion_plus.services.bootstrap_health import (
+    collect_bootstrap_issues,
+    format_bootstrap_report,
+    has_fatal_bootstrap_issue,
+)
 
 
 LAUNCHER_SETUP_VERSION = 3
@@ -1404,6 +1409,11 @@ def _parse_args(
             "waiting for Rust."
         ),
     )
+    parser.add_argument(
+        "--bootstrap-self-check",
+        action="store_true",
+        help="Validate local source layout and AppData write access.",
+    )
     return parser.parse_args(argv)
 
 
@@ -1426,6 +1436,26 @@ def main(
 
     print_header()
     store = JsonStore()
+    repo_root = Path(__file__).resolve().parents[1]
+    bootstrap_issues = collect_bootstrap_issues(
+        repo_root,
+        APP_DATA_DIR,
+        check_source_layout=not bool(getattr(sys, "frozen", False)),
+    )
+    if args.bootstrap_self_check:
+        print(format_bootstrap_report(bootstrap_issues))
+        return 3 if has_fatal_bootstrap_issue(bootstrap_issues) else 0
+    if bootstrap_issues:
+        print(format_bootstrap_report(bootstrap_issues))
+        if has_fatal_bootstrap_issue(bootstrap_issues):
+            print(
+                _paint(
+                    "[BOOTSTRAP BLOCKED] Resolve the fatal local issue(s) above.",
+                    RED,
+                    bold=True,
+                )
+            )
+            return 3
     expired_profiles = purge_expired_profiles(store)
     if expired_profiles:
         print(

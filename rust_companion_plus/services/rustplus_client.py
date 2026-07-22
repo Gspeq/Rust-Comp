@@ -179,6 +179,42 @@ class RustPlusClient:
             except Exception:
                 pass
 
+    def fetch_clean_map(self, credentials: RustCredentials):
+        """Fetch a grid map without server, event, vending, or team icons."""
+        if not credentials.is_complete():
+            raise RustPlusRequestError("Complete the Rust+ credentials first.")
+        return asyncio.run(self._fetch_clean_map(credentials))
+
+    async def _fetch_clean_map(self, credentials: RustCredentials):
+        RustError, RustSocket, ServerDetails = self._imports()
+        details = ServerDetails(
+            credentials.host,
+            credentials.port,
+            credentials.steam_id,
+            credentials.player_token,
+        )
+        socket = RustSocket(details)
+        try:
+            await socket.connect()
+            image = await socket.get_map(
+                add_icons=False,
+                add_events=False,
+                add_vending_machines=False,
+                add_team_positions=False,
+                override_images={},
+                add_grid=True,
+            )
+            if isinstance(image, RustError):
+                raise RustPlusRequestError(
+                    str(getattr(image, "reason", "Clean map request failed"))
+                )
+            return image
+        finally:
+            try:
+                await socket.disconnect()
+            except Exception:
+                pass
+
     def get_entity(self, credentials: RustCredentials, entity_id: int) -> dict[str, Any]:
         return asyncio.run(self._get_entity(credentials, entity_id))
 

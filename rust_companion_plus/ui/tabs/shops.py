@@ -9,6 +9,9 @@ import customtkinter as ctk
 from PIL import Image, ImageDraw, ImageOps
 
 from rust_companion_plus.services.item_catalog import RustItemCatalog
+from rust_companion_plus.services.shop_grid_map import (
+    render_selected_shop_grid,
+)
 from rust_companion_plus.ui.common import (
     ACCENT,
     DANGER,
@@ -393,113 +396,14 @@ def render_shop_minimap(
     *,
     output_size: tuple[int, int] = SHOP_MINIMAP_SIZE,
 ) -> Image.Image:
-    """Render a map thumbnail with matching shops and selected-shop focus."""
-    width = max(120, int(output_size[0]))
-    height = max(120, int(output_size[1]))
-    size = (width, height)
-
-    if isinstance(base_image, Image.Image):
-        base = ImageOps.fit(
-            base_image.convert("RGBA"),
-            size,
-            method=Image.Resampling.LANCZOS,
-        )
-    else:
-        base = Image.new("RGBA", size, (9, 15, 28, 255))
-        grid_draw = ImageDraw.Draw(base, "RGBA")
-        for index in range(1, 10):
-            x_line = round(width * index / 10)
-            y_line = round(height * index / 10)
-            grid_draw.line(
-                (x_line, 0, x_line, height),
-                fill=(71, 85, 105, 72),
-                width=1,
-            )
-            grid_draw.line(
-                (0, y_line, width, y_line),
-                fill=(71, 85, 105, 72),
-                width=1,
-            )
-
-    draw = ImageDraw.Draw(base, "RGBA")
-    matches = matching_shop_rows(rows, selected)
-
-    selected_point: tuple[int, int] | None = None
-    for row in reversed(matches):
-        fractions = shop_map_fraction(row.x, row.y, map_size)
-        if fractions is None:
-            continue
-        x_fraction, y_fraction = fractions
-        pixel_x = round(x_fraction * (width - 1))
-        pixel_y = round(y_fraction * (height - 1))
-
-        is_selected = row.shop_key == selected.shop_key
-        if is_selected:
-            selected_point = (pixel_x, pixel_y)
-            continue
-
-        radius = 7
-        fill = (
-            (34, 197, 94, 238)
-            if row.stock > 0
-            else (100, 116, 139, 220)
-        )
-        draw.ellipse(
-            (
-                pixel_x - radius,
-                pixel_y - radius,
-                pixel_x + radius,
-                pixel_y + radius,
-            ),
-            fill=fill,
-            outline=(248, 250, 252, 240),
-            width=2,
-        )
-
-    if selected_point is not None:
-        pixel_x, pixel_y = selected_point
-        radius = 13
-        draw.ellipse(
-            (
-                pixel_x - radius,
-                pixel_y - radius,
-                pixel_x + radius,
-                pixel_y + radius,
-            ),
-            fill=(245, 158, 11, 248),
-            outline=(255, 255, 255, 255),
-            width=3,
-        )
-        draw.line(
-            (pixel_x - 18, pixel_y, pixel_x + 18, pixel_y),
-            fill=(255, 255, 255, 240),
-            width=2,
-        )
-        draw.line(
-            (pixel_x, pixel_y - 18, pixel_x, pixel_y + 18),
-            fill=(255, 255, 255, 240),
-            width=2,
-        )
-
-    badge_width = min(width - 16, 172)
-    draw.rounded_rectangle(
-        (8, 8, 8 + badge_width, 50),
-        radius=8,
-        fill=(15, 23, 42, 224),
-        outline=(148, 163, 184, 145),
-        width=1,
+    """Render only the selected shop's fixed grid cell with no other icons."""
+    _ = rows
+    return render_selected_shop_grid(
+        base_image,
+        selected,
+        map_size,
+        output_size=output_size,
     )
-    draw.text(
-        (16, 15),
-        f"{len(matches)} matching shop(s)",
-        fill=(248, 250, 252, 255),
-    )
-    draw.text(
-        (16, 31),
-        f"Selected: {selected.grid}",
-        fill=(251, 191, 36, 255),
-    )
-    return base
 
 
 class _MetricTile(ctk.CTkFrame):
@@ -1381,8 +1285,17 @@ class ShopsTab(ctk.CTkFrame):
         *,
         force: bool = False,
     ) -> None:
-        matches = matching_shop_rows(self._visible_rows, row)
-        base_image = getattr(self.context, "map_image", None)
+        matches = [row]
+        clean_image = getattr(
+            self.context,
+            "clean_map_image",
+            None,
+        )
+        base_image = clean_image or getattr(
+            self.context,
+            "map_image",
+            None,
+        )
         cache_key = (
             row.shop_key,
             row.item_id,
@@ -1424,19 +1337,19 @@ class ShopsTab(ctk.CTkFrame):
                 f"{len(matches)} shop(s)"
             )
         )
-        if base_image is None:
+        if clean_image is None:
             self.minimap_hint.configure(
                 text=(
-                    "Orange is selected; green is another matching shop. "
-                    "Loading the current Rust+ map texture in the background…"
+                    "The selected shop is centered in its fixed grid cell. "
+                    "Loading a clean icon-free Rust+ map texture…"
                 )
             )
             self._request_minimap_base_map()
         else:
             self.minimap_hint.configure(
                 text=(
-                    "Orange is the selected shop. Green shops carry the "
-                    "same item; gray shops are out of stock."
+                    "The selected shop is centered in its fixed grid cell. "
+                    "No other shop, event, team, or server icons are shown."
                 )
             )
 
@@ -1469,7 +1382,7 @@ class ShopsTab(ctk.CTkFrame):
     def _request_minimap_base_map(self) -> None:
         if self._minimap_loading or self._minimap_load_failed:
             return
-        if getattr(self.context, "map_image", None) is not None:
+        if getattr(self.context, "clean_map_image", None) is not None:
             return
 
         credentials = getattr(self.context, "credentials", None)
@@ -1490,11 +1403,13 @@ class ShopsTab(ctk.CTkFrame):
         self._minimap_loading = True
 
         def work():
-            return rust_client.fetch_map(credentials)
+            return rust_client.fetch_clean_map(credentials)
 
         def success(image: Any) -> None:
             self._minimap_loading = False
-            self.context.map_image = image
+            self.context.clean_map_image = image
+            if getattr(self.context, "map_image", None) is None:
+                self.context.map_image = image
             vault = getattr(self.context, "profile_vault", None)
             key = str(
                 getattr(self.context, "active_profile_key", "") or ""

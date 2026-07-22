@@ -12,6 +12,9 @@ import customtkinter as ctk
 from rust_companion_plus.catalog import electrical_catalog
 from rust_companion_plus.models import ElectricalSetup, SetupComponent
 from rust_companion_plus.services.electrical import analyze_setup
+from rust_companion_plus.services.electrical_advisor import (
+    strategic_recommendations,
+)
 from rust_companion_plus.ui.common import ACCENT, DANGER, MUTED
 
 
@@ -1369,6 +1372,13 @@ class ElectricalTab(ctk.CTkFrame):
         suggestions = list(analysis.recommendations)
         suggestions.extend(
             circuit_recommendations(
+                self.nodes,
+                self.connections,
+                self.catalog,
+            )
+        )
+        suggestions.extend(
+            strategic_recommendations(
                 self.nodes,
                 self.connections,
                 self.catalog,

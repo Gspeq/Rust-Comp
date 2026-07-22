@@ -220,21 +220,15 @@ class MarketplaceUiCleanupTests(unittest.TestCase):
 
     def test_dashboard_exposes_notification_setup(self) -> None:
         dashboard = (
-            self.root
-            / "rust_companion_plus"
-            / "ui"
-            / "tabs"
-            / "dashboard.py"
+            self.root / "rust_companion_plus" / "ui" / "tabs" / "dashboard.py"
+        ).read_text(encoding="utf-8")
+        panel = (
+            self.root / "rust_companion_plus" / "ui" / "notification_settings_panel.py"
         ).read_text(encoding="utf-8")
         self.assertIn("Marketplace Notifications", dashboard)
-        self.assertIn("Save notification settings", dashboard)
-        self.assertIn("Test notification", dashboard)
-        self.assertIn("Clear alert history", dashboard)
-        self.assertIn("minimum_rating", dashboard)
-        self.assertIn("popup_seconds", dashboard)
-        self.assertIn("repeat_hours", dashboard)
-        self.assertIn("max_alerts", dashboard)
-
-
-if __name__ == "__main__":
-    unittest.main()
+        self.assertIn("MarketplaceNotificationSettingsPanel", dashboard)
+        self.assertIn("Save notification settings", panel)
+        self.assertIn("Test notification", panel)
+        self.assertIn("Clear alert history", panel)
+        self.assertIn("Loot preset", panel)
+        self.assertIn("Specific items", panel)

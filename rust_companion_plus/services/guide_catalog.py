@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-GUIDE_VERSION = "0.7.0"
+GUIDE_VERSION = "0.8.0"
 GUIDE_LAST_UPDATED = "2026-07-22"
 
 
@@ -26,279 +26,222 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
     "Overview": GuideSection(
         name="Overview",
         summary=(
-            "The Dashboard combines connection status, Rust+ pairing, server "
-            "intelligence, marketplace notification settings, and the live event timeline."
+            "The Dashboard combines server status, Rust+ pairing, the complete "
+            "feature guide, marketplace notification presets, intelligence, and "
+            "the live event timeline."
         ),
         useful_when=(
-            "Use it first when opening the app, changing servers, checking whether "
-            "Rust+ is live, or changing marketplace alert behavior."
+            "Use it first after launch, when changing servers, configuring alerts, "
+            "or learning what another page can do."
         ),
         features=(
             GuideFeature(
+                "Feature Guide",
+                "The Dashboard-only Guide button opens this maintained catalog for every tab and major feature.",
+                "Useful when setting up a system for the first time or checking limitations before relying on it.",
+            ),
+            GuideFeature(
                 "Server metrics",
-                "Shows server name, population, detected game endpoint, and last update.",
-                "Useful for confirming that the app is reading the intended server.",
+                "Shows server name, population, detected endpoint, and the latest refresh time.",
+                "Useful for confirming that the intended live or saved server is active.",
             ),
             GuideFeature(
                 "Rust+ pairing",
-                "Stores the companion host, app port, Steam ID, and player token for the active server.",
-                "Useful after pairing a server or when repairing an incomplete profile.",
+                "Stores the companion host, app port, Steam ID, and player token for the active server profile.",
+                "Useful after pairing or when repairing an incomplete server-specific profile.",
             ),
             GuideFeature(
-                "Connect and refresh",
-                "Requests a fresh Rust+ snapshot using the currently saved pairing profile.",
-                "Useful when cached information is visible but live data has not connected.",
+                "Marketplace notification presets",
+                "Filters alerts by All, Basic, Mid tier, High tier, Endgame, or custom watched items, plus rating, stock, cost, blueprint, sound, repeat, Windows, and in-app settings.",
+                "Useful for matching alerts to your current wipe progression and avoiding irrelevant notifications.",
             ),
             GuideFeature(
-                "Re-detect server",
-                "Rechecks the running Rust process, logs, sockets, and public server metadata.",
-                "Useful after joining a different server or when the detected endpoint looks wrong.",
-            ),
-            GuideFeature(
-                "Marketplace notifications",
-                "Controls alert level, sound, popup duration, repeat suppression, and alerts per scan.",
-                "Useful when tuning how often STEAL, CAN'T MISS, and possible listing-error alerts appear.",
-            ),
-            GuideFeature(
-                "Server intelligence",
-                "Explains why the endpoint was selected and shows accepted, rejected, and public evidence.",
-                "Useful for troubleshooting server detection or Rust+ endpoint differences.",
-            ),
-            GuideFeature(
-                "Live timeline",
-                "Records population, team, event, detection, and Rust+ changes.",
-                "Useful for reviewing what changed while using other tabs.",
+                "Server intelligence and timeline",
+                "Explains endpoint evidence and records Rust+, population, team, smart-device, and world-event changes.",
+                "Useful for troubleshooting and reviewing what changed while another page was open.",
             ),
         ),
     ),
     "Map": GuideSection(
         name="Map",
         summary=(
-            "Map Intelligence combines the server map, Rust+ markers, optional resource "
-            "analysis, zoom controls, and starter-base recommendations."
+            "Map Intelligence combines live or cached maps, interactive zoom and pan, "
+            "server-marker visibility, multiple quick overlays, and starter-base analysis."
         ),
         useful_when=(
-            "Use it while planning routes, deciding where to build, locating shops or "
-            "events, and comparing resource access against player traffic."
+            "Use it for route planning, build-location comparison, resource access, and inspecting a specific area."
         ),
         features=(
             GuideFeature(
-                "Live and cached map",
-                "Uses the current Rust+ map when available and saved map assets when offline.",
-                "Useful for planning with Rust closed or during a temporary Rust+ outage.",
+                "Zoom and pan",
+                "Use Fit through 8x zoom, +/- controls, the mouse wheel, drag-to-pan, and double-click recentering.",
+                "Useful when a full-map view is too small to inspect terrain or a specific grid.",
             ),
             GuideFeature(
-                "Zoom and recenter",
-                "Supports fit and fixed zoom levels, mouse-wheel zoom, and click-to-center.",
-                "Useful when inspecting a specific grid or shop location.",
+                "Marker toggle",
+                "Shows or hides Rust+ server icons without deleting marker data.",
+                "Useful when vending, event, or team icons obscure terrain.",
             ),
             GuideFeature(
-                "Server icon visibility",
-                "Shows or hides Rust+ map markers without removing the underlying data.",
-                "Useful when markers obscure terrain or resource overlays.",
-            ),
-            GuideFeature(
-                "Resource overlays",
-                "Displays parsed or estimated resource and terrain layers when available.",
-                "Useful for comparing stone, metal, sulfur, roads, water, and biome access.",
+                "Quick overlay toggles",
+                "Allows several commonly useful resource, road, water, and monument layers to be enabled together while retaining the detailed layer selector.",
+                "Useful for comparing competing location factors in one map view.",
             ),
             GuideFeature(
                 "Starter spot recommendation",
-                "Scores candidate areas using resources, roads, terrain, water, monuments, events, shops, and edge risk.",
-                "Useful at wipe start or after relocating; it is a planning estimate, not a safety guarantee.",
+                "Scores candidate areas using resources, roads, terrain, water, monuments, events, shops, and map-edge risk, then zooms to the strongest estimate.",
+                "Useful at wipe start or after relocating; it is not a player-safety guarantee.",
             ),
         ),
     ),
     "Team": GuideSection(
         name="Team",
         summary=(
-            "Team Intelligence turns Rust+ team positions and status changes into a "
-            "readable operational view."
+            "Team Intelligence turns Rust+ team states and positions into a readable operational view and stores the local player's latest death positions."
         ),
         useful_when=(
-            "Use it to check who is online or alive, find isolated teammates, review "
-            "recent deaths, and understand nearby map context."
+            "Use it for teammate coordination, isolation checks, and returning toward a recent death location."
         ),
         features=(
             GuideFeature(
-                "Team status",
-                "Shows online, alive, position, and last-known state for Rust+ team members.",
-                "Useful before roaming or coordinating a return to base.",
+                "Team status and isolation",
+                "Shows online/alive state, last position, distances, and separated teammates.",
+                "Useful before roaming or deciding who needs support.",
             ),
             GuideFeature(
-                "Distance and isolation",
-                "Compares teammate positions and identifies members far from the group.",
-                "Useful for finding separated teammates or deciding who needs support.",
+                "Latest deaths",
+                "Detects the local player's Rust+ alive-to-dead transition on a one-second snapshot cadence and stores the last known pre-death coordinates.",
+                "Useful for recovery routes; the position remains approximate because Rust+ reports snapshots rather than an exact death packet.",
             ),
             GuideFeature(
                 "Monument context",
-                "Associates team positions with nearby named monuments when exact map data exists.",
-                "Useful when teammates report only their map position.",
-            ),
-            GuideFeature(
-                "My last deaths",
-                "Stores recent automatic Rust+ alive-to-dead transitions for the local player.",
-                "Useful for returning to an approximate death area.",
+                "Associates team positions with named monuments when exact parsed map metadata is available.",
+                "Useful when a teammate reports only a position or vague landmark.",
             ),
         ),
     ),
     "Shops": GuideSection(
         name="Shops",
         summary=(
-            "The marketplace searches Rust+ vending listings, compares equivalent trades, "
-            "rates deals in plain text, and maps matching shop locations."
+            "The marketplace searches Rust+ vending offers, marks blueprints, rates equivalent trades in text, sends configurable alerts, and shows the selected shop's exact grid cell."
         ),
         useful_when=(
-            "Use it when buying or selling items, checking whether a price is unusual, or "
-            "finding the closest shop offering a specific trade."
+            "Use it when buying or selling, watching progression-specific loot, or checking whether a price is unusually strong."
         ),
         features=(
             GuideFeature(
-                "Buy, payment, and location searches",
-                "Filters the item being sold, the requested payment item, and shop/grid text.",
-                "Useful for narrowing a large marketplace without hiding important columns.",
+                "Compact listings and BP marking",
+                "Important columns fit without sideways scrolling, and blueprint items are visibly prefixed with BP.",
+                "Useful for avoiding blueprint/item confusion while scanning many offers.",
             ),
             GuideFeature(
-                "BP marking",
-                "Blueprint listings stay visible and are prefixed with BP in the sold or payment item field.",
-                "Useful for avoiding confusion between a blueprint and the crafted item.",
+                "Best Value",
+                "Compares normalized unit cost only within identical item, payment, and blueprint markets using live peers, rolling history, stock, rank, confidence, and robust outlier detection.",
+                "Useful for finding strong deals without comparing unrelated trades.",
             ),
             GuideFeature(
-                "Best value",
-                "Ranks equivalent trades using unit price, live peers, rolling history, stock, rank, confidence, and robust outlier detection.",
-                "Useful for finding strong offers without comparing unrelated currencies or blueprint states.",
+                "Fixed grid map",
+                "Selecting an offer shows only that shop's grid section at a fixed zoom with one shop marker and no unrelated icons.",
+                "Useful for recognizing the immediate terrain around the destination without a cluttered full map.",
             ),
             GuideFeature(
-                "Deal ratings",
-                "Labels listings as possible error, can't miss, steal, good value, fair, overpriced, unpriced, or out of stock.",
-                "Useful for understanding the recommendation without relying on row color.",
-            ),
-            GuideFeature(
-                "Advanced limits",
-                "Optionally limits results by minimum stock or maximum total cost.",
-                "Useful after the basic searches already identify the desired market.",
-            ),
-            GuideFeature(
-                "Shop minimap",
-                "Shows the selected shop and other matching locations on a focused map.",
-                "Useful for choosing between several comparable offers.",
-            ),
-            GuideFeature(
-                "Marketplace alerts",
-                "Sends new high-value or possible listing-error notices in-app and through Windows notifications.",
-                "Useful while Rust is fullscreen or while viewing another app tab.",
+                "Loot and item alerts",
+                "Dashboard settings can filter by progression preset, specific item names or IDs, any-listing watches, minimum stock, maximum cost, blueprints, deal rating, and delivery path.",
+                "Useful while Rust is fullscreen or while waiting for a rare item to appear.",
             ),
         ),
     ),
     "Electrical": GuideSection(
         name="Electrical",
         summary=(
-            "Electrical Planner offers a fast natural-language power estimate and a complete "
-            "advanced circuit workspace."
+            "Electrical opens directly into the complete visual circuit designer. The former basic planner has been removed and its power-balance information remains integrated into the canvas metrics and recommendations."
         ),
         useful_when=(
-            "Use it before building a circuit, when diagnosing insufficient power, or when "
-            "planning batteries and generation for a base."
+            "Use it before building, while diagnosing a circuit, or when hardening an endgame defense and automation network."
         ),
         features=(
             GuideFeature(
-                "Simple Planner",
-                "Parses common Rust electrical components from a written description and estimates load, generation, storage, and runtime.",
-                "Useful for quick plans without drawing every wire.",
+                "Visual circuit designer",
+                "Drag or click equipment, wire outputs to inputs, arrange nodes, edit quantity/state/zone, and save the complete circuit.",
+                "Useful whenever topology matters instead of only component totals.",
             ),
             GuideFeature(
-                "Recommendations",
-                "Highlights generation shortages, battery limits, excess capacity, and likely substitutions.",
-                "Useful for correcting a plan before spending resources.",
+                "Integrated power model",
+                "Shows load, peak and average generation, battery storage/output, no-generation runtime, and charging headroom directly above the canvas.",
+                "Useful for determining whether a circuit works through night, weather, or generator loss.",
             ),
             GuideFeature(
-                "Advanced Circuit",
-                "Preserves the visual circuit editor, wiring paths, branch analysis, loop detection, disconnected-load checks, and saved layouts.",
-                "Useful when exact topology matters or the simple estimate is not enough.",
+                "Strategic suggestions",
+                "Adds topology fixes plus redundancy, branch priority, turret isolation, Smart Alarm, Storage Monitor, production timer, zone isolation, and single-point-failure advice.",
+                "Useful for turning a merely powered circuit into a maintainable and raid-resistant system.",
             ),
         ),
     ),
     "Smart Devices": GuideSection(
         name="Smart Devices",
         summary=(
-            "The Smart Devices hub stores paired Rust+ entity IDs and performs grouped "
-            "status and control operations."
+            "Smart Base Control turns paired Rust+ entities into named devices, logical systems, verified scenes, local rules, and an activity log."
         ),
         useful_when=(
-            "Use it to monitor or control supported switches, alarms, storage monitors, and "
-            "other Rust+ entities from one place."
+            "Use it to operate defense zones, lights, lockdown circuits, industry, alarms, and storage monitors from one console."
         ),
         features=(
             GuideFeature(
-                "Saved devices",
-                "Stores entity ID, name, zone, and favorite status separately for each server.",
-                "Useful for turning numeric entity IDs into a readable device list.",
+                "Devices",
+                "Stores entity ID, name, zone, role, logical system, favorite state, and the latest Rust+ status fields; supports batch refresh and ON/OFF.",
+                "Useful for replacing raw entity IDs with an organized base-control inventory.",
             ),
             GuideFeature(
-                "Status reads",
-                "Reads selected or all devices in one Rust+ socket session.",
-                "Useful for checking state, capacity, protection, expiration, and API errors.",
+                "Systems",
+                "Groups selected devices into a named zone or purpose such as North Defense, Core Lights, or Furnace Bank, then refreshes or controls the whole group.",
+                "Useful for maintenance and logical control without selecting individual entities every time.",
             ),
             GuideFeature(
-                "Batch control",
-                "Turns selected controllable entities on or off together.",
-                "Useful for grouped lights, defenses, doors, or alarm systems when the Rust+ API supports control.",
+                "Scenes",
+                "Stores multi-device ON/OFF states such as Raid Mode, Offline Mode, Quiet Mode, Industry Mode, or Emergency Lockdown, with preview, confirmation, and post-run verification.",
+                "Useful for changing many circuits safely with one action.",
             ),
             GuideFeature(
-                "Favorites and zones",
-                "Sorts important devices first and groups them by room or purpose.",
-                "Useful in bases with many paired devices.",
+                "Rules and activity",
+                "Evaluates value transitions, capacity thresholds, status changes, and entity errors after refresh; rules can notify or run a scene when explicitly armed and respect cooldowns.",
+                "Useful for low-ammo/storage warnings and controlled local automation. Rules only run while the app and Rust+ connection are active.",
             ),
         ),
     ),
     "Saved Servers": GuideSection(
         name="Saved Servers",
         summary=(
-            "Saved Servers manages offline server archives, pairing metadata, cached maps, "
-            "and per-server workspace data."
+            "Saved Servers manages offline server archives, pairing metadata, cached maps, and server-specific workspace data."
         ),
         useful_when=(
-            "Use it to reopen a server with Rust closed, remove an obsolete profile, or "
-            "inspect what the app has saved."
+            "Use it to reopen cached data with Rust closed or remove profiles for servers you no longer play."
         ),
         features=(
             GuideFeature(
                 "Open saved profile",
-                "Loads cached server, team, map, shop, timeline, and workspace data.",
-                "Useful when Rust is closed or live Rust+ is temporarily unavailable.",
+                "Loads cached server, team, map, shop, timeline, electrical, and smart-control workspace data.",
+                "Useful during a Rust+ outage or with Rust closed.",
             ),
             GuideFeature(
-                "Remove one or all",
-                "Deletes selected profile metadata and associated cached assets.",
-                "Useful after leaving a server or clearing old data.",
-            ),
-            GuideFeature(
-                "Automatic retention",
-                "Removes profiles with no live update for 30 days.",
-                "Useful for keeping the archive from accumulating abandoned servers.",
+                "Delete and retention",
+                "Removes one or all saved profiles and automatically purges profiles with no live update for 30 days.",
+                "Useful for keeping credentials and cached assets limited to current servers.",
             ),
         ),
     ),
     "Notes": GuideSection(
         name="Notes",
         summary=(
-            "Notes provides a server-aware place to record plans, reminders, codes, routes, "
-            "and other information that Rust+ does not supply."
+            "Notes stores server-aware plans, reminders, routes, tasks, and observations that Rust+ cannot provide."
         ),
         useful_when=(
-            "Use it for raid plans, build tasks, teammate reminders, shopping lists, or "
-            "anything that should remain with the companion workspace."
+            "Use it for build tasks, raid plans, teammate reminders, shopping lists, or manual intelligence."
         ),
         features=(
             GuideFeature(
                 "Persistent notes",
-                "Stores written information in the app's local data.",
-                "Useful for information you need across multiple play sessions.",
-            ),
-            GuideFeature(
-                "Manual context",
-                "Complements automated Rust+ information with details only the player knows.",
-                "Useful for plans, agreements, and observations that cannot be detected automatically.",
+                "Keeps written information in local application data and the active server workspace.",
+                "Useful for details needed across multiple sessions.",
             ),
         ),
     ),
@@ -339,13 +282,12 @@ def render_guide_markdown() -> str:
         f"Last updated: {GUIDE_LAST_UPDATED}",
         "",
         (
-            "This file is generated from the same guide catalog used by the "
-            "in-application Guide button. Update the catalog whenever a tab or "
-            "feature changes, then regenerate this document."
+            "This file is generated from the same catalog opened by the "
+            "Dashboard Feature Guide button. Update the catalog whenever a tab "
+            "or feature changes, then regenerate this document."
         ),
     ]
-    for name in GUIDE_SECTIONS:
-        section = GUIDE_SECTIONS[name]
+    for section in GUIDE_SECTIONS.values():
         lines.extend(
             (
                 "",

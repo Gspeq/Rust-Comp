@@ -86,9 +86,9 @@ class ShopGridAndDesignTests(unittest.TestCase):
             filters=ShopFilters(**kwargs),
         )
 
-    def test_rustplus_refresh_is_three_seconds(self) -> None:
+    def test_rustplus_refresh_is_one_second_for_death_accuracy(self) -> None:
         self.assertEqual(
-            3_000,
+            1_000,
             RustCompanionApp.RUSTPLUS_INTERVAL_MS,
         )
 

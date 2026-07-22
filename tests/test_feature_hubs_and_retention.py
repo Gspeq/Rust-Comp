@@ -149,7 +149,10 @@ class HubContractTests(unittest.TestCase):
         image = Image.new("RGBA", (400, 300), (1, 2, 3, 255))
         zoomed = zoom_crop(image, 4.0, (0.0, 0.0))
         self.assertEqual(image.size, zoomed.size)
-        self.assertEqual(("Fit", "1.5x", "2x", "3x", "4x"), ZOOM_LEVELS)
+        self.assertEqual(
+            ("Fit", "1.5x", "2x", "3x", "4x", "6x", "8x"),
+            ZOOM_LEVELS,
+        )
 
     def test_smart_devices_deduplicate_and_favorite_first(self) -> None:
         rows = normalize_devices(
@@ -196,8 +199,9 @@ class HubContractTests(unittest.TestCase):
         self.assertIn('"Best value"', shop)
         self.assertIn('tabs.add("Simple")', shop)
         self.assertIn('tabs.add("Advanced")', shop)
-        self.assertIn('self.tabs.add("Simple Planner")', electrical)
-        self.assertIn('self.tabs.add("Advanced Circuit")', electrical)
+        self.assertNotIn("Simple Planner", electrical)
+        self.assertNotIn("CTkTabview", electrical)
+        self.assertIn("AdvancedElectricalTab", electrical)
 
 
 if __name__ == "__main__":

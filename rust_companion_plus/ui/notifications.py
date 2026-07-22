@@ -18,7 +18,9 @@ CREATE_NO_WINDOW = 0x08000000
 
 
 def _powershell_literal(value: str, limit: int) -> str:
-    cleaned = " ".join(str(value or "").replace("\x00", "").split())
+    cleaned = " ".join(
+        str(value or "").replace("\x00", "").split()
+    )
     return cleaned[:limit].replace("'", "''")
 
 
@@ -37,14 +39,14 @@ def show_windows_notification(
     title = _powershell_literal(top.title, 63)
     body = top.message
     if extra:
-        body += f" Plus {extra} more new alert-worthy listing(s)."
+        body += f" Plus {extra} more new alert(s)."
     body = _powershell_literal(body, 255)
     duration_ms = max(5, min(60, int(seconds))) * 1000
     icon = "Warning" if top.severity >= 3 else "Info"
 
     # System.Windows.Forms.NotifyIcon routes through the Windows notification
     # area. Unlike a Tk window, it remains useful while Rust is fullscreen and
-    # also leaves a record in Windows Notification Center when Windows permits.
+    # can leave a record in Windows Notification Center when Windows permits.
     script = f"""
 Add-Type -AssemblyName System.Windows.Forms
 Add-Type -AssemblyName System.Drawing
@@ -77,15 +79,14 @@ $notify.Dispose()
     except (OSError, ValueError):
         return False
 
-    # NotifyIcon controls its own sound. A separate app bell is only needed for
-    # the in-app fallback, so this argument is intentionally retained for API
-    # clarity and future native-sound controls.
+    # NotifyIcon controls its own Windows sound policy. The setting remains
+    # useful for the in-app fallback and future native audio options.
     _ = sound
     return True
 
 
 class DealNotificationCenter:
-    """Native Windows plus non-modal in-app marketplace notifications."""
+    """Native Windows plus non-modal in-app alerts for shops and smart rules."""
 
     def __init__(self, owner: ctk.CTk) -> None:
         self.owner = owner
@@ -97,25 +98,38 @@ class DealNotificationCenter:
         alerts: Sequence[DealAlert],
         *,
         settings: Any,
-        on_open_shops: Callable[[], None],
+        on_open_shops: Callable[[], None] | None = None,
+        on_action: Callable[[], None] | None = None,
+        action_label: str = "Open Shops",
         force: bool = False,
     ) -> None:
         configured = normalize_notification_settings(settings)
         if not alerts or (not configured["enabled"] and not force):
             return
 
-        native_sent = show_windows_notification(
-            alerts,
-            seconds=configured["popup_seconds"],
-            sound=configured["sound"],
-        )
+        callback = on_action or on_open_shops or (lambda: None)
+        native_sent = False
+        if configured.get("windows_notifications", True):
+            native_sent = show_windows_notification(
+                alerts,
+                seconds=configured["popup_seconds"],
+                sound=configured["sound"],
+            )
+
         self.dismiss()
+        if not configured.get("in_app_notifications", True):
+            if configured["sound"] and not native_sent:
+                try:
+                    self.owner.bell()
+                except Exception:
+                    pass
+            return
 
         top = alerts[0]
         extra = len(alerts) - 1
         window = ctk.CTkToplevel(self.owner)
         self._window = window
-        window.title("Rust Companion+ marketplace alert")
+        window.title("Rust Companion+ alert")
         window.resizable(False, False)
         try:
             window.transient(self.owner)
@@ -125,12 +139,18 @@ class DealNotificationCenter:
 
         card = ctk.CTkFrame(
             window,
-            width=430,
+            width=440,
             corner_radius=12,
             border_width=1,
             border_color=("#64748b", "#475569"),
         )
-        card.grid(row=0, column=0, sticky="nsew", padx=8, pady=8)
+        card.grid(
+            row=0,
+            column=0,
+            sticky="nsew",
+            padx=8,
+            pady=8,
+        )
         card.grid_columnconfigure(0, weight=1)
 
         ctk.CTkLabel(
@@ -138,11 +158,17 @@ class DealNotificationCenter:
             text=top.title,
             font=ctk.CTkFont(size=17, weight="bold"),
             anchor="w",
-        ).grid(row=0, column=0, sticky="ew", padx=14, pady=(13, 4))
+        ).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=(13, 4),
+        )
 
         summary = top.message
         if extra:
-            summary += f"\n\nPlus {extra} more new alert-worthy listing(s)."
+            summary += f"\n\nPlus {extra} more new alert(s)."
         if native_sent:
             summary += "\n\nAlso sent to Windows Notification Center."
         ctk.CTkLabel(
@@ -151,33 +177,55 @@ class DealNotificationCenter:
             text_color=MUTED,
             justify="left",
             anchor="w",
-            wraplength=390,
-        ).grid(row=1, column=0, sticky="ew", padx=14, pady=(0, 10))
+            wraplength=400,
+        ).grid(
+            row=1,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=(0, 10),
+        )
 
         buttons = ctk.CTkFrame(card, fg_color="transparent")
-        buttons.grid(row=2, column=0, sticky="ew", padx=14, pady=(0, 13))
+        buttons.grid(
+            row=2,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=(0, 13),
+        )
         buttons.grid_columnconfigure((0, 1), weight=1)
 
-        def open_shops() -> None:
+        def run_action() -> None:
             self.dismiss()
-            on_open_shops()
+            callback()
 
         ctk.CTkButton(
             buttons,
-            text="Open Shops",
+            text=action_label,
             fg_color=ACCENT,
-            command=open_shops,
-        ).grid(row=0, column=0, sticky="ew", padx=(0, 5))
+            command=run_action,
+        ).grid(
+            row=0,
+            column=0,
+            sticky="ew",
+            padx=(0, 5),
+        )
         ctk.CTkButton(
             buttons,
             text="Dismiss",
             fg_color="transparent",
             border_width=1,
             command=self.dismiss,
-        ).grid(row=0, column=1, sticky="ew", padx=(5, 0))
+        ).grid(
+            row=0,
+            column=1,
+            sticky="ew",
+            padx=(5, 0),
+        )
 
         window.update_idletasks()
-        width = max(430, window.winfo_reqwidth())
+        width = max(440, window.winfo_reqwidth())
         height = max(190, window.winfo_reqheight())
         x = max(
             0,
