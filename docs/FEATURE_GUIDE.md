@@ -1,6 +1,6 @@
 # Rust Companion+ Feature Guide
 
-Guide version: 0.8.0
+Guide version: 0.8.1
 Last updated: 2026-07-22
 
 This file is generated from the same catalog opened by the Dashboard Feature Guide button. Update the catalog whenever a tab or feature changes, then regenerate this document.
@@ -44,13 +44,13 @@ Explains endpoint evidence and records Rust+, population, team, smart-device, an
 
 ## Map
 
-Map Intelligence combines live or cached maps, interactive zoom and pan, server-marker visibility, multiple quick overlays, and starter-base analysis.
+Map Intelligence combines live or cached maps, cached interactive zoom and pan, server-marker visibility, multiple quick overlays, and mainland-aware starter analysis.
 
 **When useful:** Use it for route planning, build-location comparison, resource access, and inspecting a specific area.
 
 ### Zoom and pan
 
-Use Fit through 8x zoom, +/- controls, the mouse wheel, drag-to-pan, and double-click recentering.
+Uses a cached overlay composite, direct display-size resizing, throttled wheel/pan frames, Fit through 8x zoom, and a high-quality idle redraw.
 
 **When useful:** Useful when a full-map view is too small to inspect terrain or a specific grid.
 
@@ -68,7 +68,7 @@ Allows several commonly useful resource, road, water, and monument layers to be 
 
 ### Starter spot recommendation
 
-Scores candidate areas using resources, roads, terrain, water, monuments, events, shops, and map-edge risk, then zooms to the strongest estimate.
+Rejects water-locked cells and small isolated landmasses, prefers mainland access and escape routes, then scores resources, roads, terrain, monuments, events, and map-edge risk.
 
 **When useful:** Useful at wipe start or after relocating; it is not a player-safety guarantee.
 
@@ -87,7 +87,7 @@ Shows online/alive state, last position, distances, and separated teammates.
 
 ### Latest deaths
 
-Detects the local player's Rust+ alive-to-dead transition on a one-second snapshot cadence and stores the last known pre-death coordinates.
+Uses a lightweight one-second team-only poll for alive-to-dead transitions while full server and vending snapshots refresh every five seconds.
 
 **When useful:** Useful for recovery routes; the position remains approximate because Rust+ reports snapshots rather than an exact death packet.
 
@@ -100,7 +100,7 @@ Associates team positions with named monuments when exact parsed map metadata is
 
 ## Shops
 
-The marketplace searches Rust+ vending offers, marks blueprints, rates equivalent trades in text, sends configurable alerts, and shows the selected shop's exact grid cell.
+The marketplace searches Rust+ vending offers, marks blueprints, uses progression-aware deal ratings, sends low-noise alerts, and shows the selected shop's exact grid cell.
 
 **When useful:** Use it when buying or selling, watching progression-specific loot, or checking whether a price is unusually strong.
 
@@ -112,7 +112,7 @@ Important columns fit without sideways scrolling, and blueprint items are visibl
 
 ### Best Value
 
-Compares normalized unit cost only within identical item, payment, and blueprint markets using live peers, rolling history, stock, rank, confidence, and robust outlier detection.
+Compares normalized unit cost within identical markets, then uses item progression tier and payment importance so primitive goods can be good value but never STEAL or CAN'T MISS.
 
 **When useful:** Useful for finding strong deals without comparing unrelated trades.
 
@@ -124,7 +124,7 @@ Selecting an offer shows only that shop's grid section at a fixed zoom with one 
 
 ### Loot and item alerts
 
-Dashboard settings can filter by progression preset, specific item names or IDs, any-listing watches, minimum stock, maximum cost, blueprints, deal rating, and delivery path.
+Dashboard settings filter progression presets and watched items. Ordinary STEAL/CAN'T MISS alerts require an actionable mid/high-tier item; watched-item any-listing alerts remain explicit overrides.
 
 **When useful:** Useful while Rust is fullscreen or while waiting for a rare item to appear.
 

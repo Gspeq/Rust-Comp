@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-GUIDE_VERSION = "0.8.0"
+GUIDE_VERSION = "0.8.1"
 GUIDE_LAST_UPDATED = "2026-07-22"
 
 
@@ -65,8 +65,8 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
     "Map": GuideSection(
         name="Map",
         summary=(
-            "Map Intelligence combines live or cached maps, interactive zoom and pan, "
-            "server-marker visibility, multiple quick overlays, and starter-base analysis."
+            "Map Intelligence combines live or cached maps, cached interactive zoom and pan, "
+            "server-marker visibility, multiple quick overlays, and mainland-aware starter analysis."
         ),
         useful_when=(
             "Use it for route planning, build-location comparison, resource access, and inspecting a specific area."
@@ -74,7 +74,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
         features=(
             GuideFeature(
                 "Zoom and pan",
-                "Use Fit through 8x zoom, +/- controls, the mouse wheel, drag-to-pan, and double-click recentering.",
+                "Uses a cached overlay composite, direct display-size resizing, throttled wheel/pan frames, Fit through 8x zoom, and a high-quality idle redraw.",
                 "Useful when a full-map view is too small to inspect terrain or a specific grid.",
             ),
             GuideFeature(
@@ -89,7 +89,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
             ),
             GuideFeature(
                 "Starter spot recommendation",
-                "Scores candidate areas using resources, roads, terrain, water, monuments, events, shops, and map-edge risk, then zooms to the strongest estimate.",
+                "Rejects water-locked cells and small isolated landmasses, prefers mainland access and escape routes, then scores resources, roads, terrain, monuments, events, and map-edge risk.",
                 "Useful at wipe start or after relocating; it is not a player-safety guarantee.",
             ),
         ),
@@ -110,7 +110,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
             ),
             GuideFeature(
                 "Latest deaths",
-                "Detects the local player's Rust+ alive-to-dead transition on a one-second snapshot cadence and stores the last known pre-death coordinates.",
+                "Uses a lightweight one-second team-only poll for alive-to-dead transitions while full server and vending snapshots refresh every five seconds.",
                 "Useful for recovery routes; the position remains approximate because Rust+ reports snapshots rather than an exact death packet.",
             ),
             GuideFeature(
@@ -123,7 +123,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
     "Shops": GuideSection(
         name="Shops",
         summary=(
-            "The marketplace searches Rust+ vending offers, marks blueprints, rates equivalent trades in text, sends configurable alerts, and shows the selected shop's exact grid cell."
+            "The marketplace searches Rust+ vending offers, marks blueprints, uses progression-aware deal ratings, sends low-noise alerts, and shows the selected shop's exact grid cell."
         ),
         useful_when=(
             "Use it when buying or selling, watching progression-specific loot, or checking whether a price is unusually strong."
@@ -136,7 +136,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
             ),
             GuideFeature(
                 "Best Value",
-                "Compares normalized unit cost only within identical item, payment, and blueprint markets using live peers, rolling history, stock, rank, confidence, and robust outlier detection.",
+                "Compares normalized unit cost within identical markets, then uses item progression tier and payment importance so primitive goods can be good value but never STEAL or CAN'T MISS.",
                 "Useful for finding strong deals without comparing unrelated trades.",
             ),
             GuideFeature(
@@ -146,7 +146,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
             ),
             GuideFeature(
                 "Loot and item alerts",
-                "Dashboard settings can filter by progression preset, specific item names or IDs, any-listing watches, minimum stock, maximum cost, blueprints, deal rating, and delivery path.",
+                "Dashboard settings filter progression presets and watched items. Ordinary STEAL/CAN'T MISS alerts require an actionable mid/high-tier item; watched-item any-listing alerts remain explicit overrides.",
                 "Useful while Rust is fullscreen or while waiting for a rare item to appear.",
             ),
         ),

@@ -170,3 +170,21 @@ support progression presets, specific watched items, stock/cost and blueprint
 filters, and separate Windows/fullscreen and in-app delivery controls. The
 bootstrapper performs local source-layout and AppData write checks and exposes
 `--bootstrap-self-check` for diagnostics.
+
+
+## Marketplace accuracy and interaction performance
+
+<!-- MARKET_REFINEMENT_PERFORMANCE_081 -->
+
+Version 0.8.1 splits one-second team/death polling from five-second full
+server and marketplace snapshots, avoids rebuilding unchanged shop tables,
+debounces marketplace searches, and caches map overlays for throttled fast
+wheel/pan rendering with a high-quality idle redraw.
+
+Starter recommendations reject water-locked cells and small isolated
+landmasses before scoring resources and access. Marketplace ratings remain
+same-market comparisons, but STEAL and CAN'T MISS now require a worthwhile
+mid/high-tier progression item. Primitive/common items such as hunting bows,
+wood, and stone remain FAIR even when relatively cheap and cannot produce
+automatic urgent deal alerts. The former POSSIBLE LISTING ERROR category is removed; extreme
+actionable bargains use the normal STEAL/CAN'T MISS ratings.

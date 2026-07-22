@@ -78,7 +78,19 @@ class ShopsTab(BaseShopsTab):
         self._last_requested_sort = (
             "Best value"
         )
+        self._filter_refresh_job: Any = None
         super().__init__(master, context)
+        for entry in (
+            self.buy_query,
+            self.sell_query,
+            self.location_query,
+            self.min_stock,
+            self.max_cost,
+        ):
+            entry.bind(
+                "<KeyRelease>",
+                lambda _event: self._request_filter_refresh(),
+            )
 
     def _build_filter_bar(self) -> None:
         tabs = ctk.CTkTabview(
@@ -220,7 +232,7 @@ class ShopsTab(BaseShopsTab):
         self.table_note.configure(
             text=(
                 "BP listings are marked directly. Best value uses unit price, "
-                "live peers, history, stock, rank, confidence, and outlier detection."
+                "live peers and history, then limits STEAL/CAN'T MISS to worthwhile progression items."
             )
         )
 
@@ -234,6 +246,21 @@ class ShopsTab(BaseShopsTab):
                 except Exception:
                     pass
             self._hide_horizontal_scrollbars(child)
+
+    def _request_filter_refresh(self) -> None:
+        if self._filter_refresh_job is not None:
+            try:
+                self.after_cancel(self._filter_refresh_job)
+            except Exception:
+                pass
+        self._filter_refresh_job = self.after(
+            140,
+            self._run_filter_refresh,
+        )
+
+    def _run_filter_refresh(self) -> None:
+        self._filter_refresh_job = None
+        self.refresh()
 
     def clear_filters(self) -> None:
         for entry in (
@@ -296,15 +323,17 @@ class ShopsTab(BaseShopsTab):
             and self._scored_rows
             and not self._score_busy
         ):
-            self._scored_rows = (
-                sort_scored_rows(
+            if filters.sort_mode != self._last_requested_sort:
+                self._scored_rows = sort_scored_rows(
                     self._scored_rows,
                     filters.sort_mode,
                 )
-            )
-            self._render_scored_rows(
-                map_size
-            )
+                self._last_requested_sort = filters.sort_mode
+                self._render_scored_rows(map_size)
+            else:
+                self.table_note.configure(
+                    text="Marketplace unchanged; cached ratings reused."
+                )
             return
 
         if self._score_busy:

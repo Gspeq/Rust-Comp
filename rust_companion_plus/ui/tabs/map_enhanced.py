@@ -32,16 +32,13 @@ ZOOM_LEVELS = (
 )
 
 
-def zoom_crop(
-    image: Image.Image,
+def _crop_box(
+    size: tuple[int, int],
     zoom: float,
     center: tuple[float, float],
-) -> Image.Image:
-    source = image.convert("RGBA")
-    if zoom <= 1.0:
-        return source.copy()
-
-    width, height = source.size
+) -> tuple[int, int, int, int]:
+    width, height = size
+    zoom = max(1.0, float(zoom))
     crop_width = max(32, int(round(width / zoom)))
     crop_height = max(32, int(round(height / zoom)))
     cx = min(1.0, max(0.0, float(center[0]))) * width
@@ -50,11 +47,57 @@ def zoom_crop(
     top = int(round(cy - crop_height / 2))
     left = min(max(0, left), max(0, width - crop_width))
     top = min(max(0, top), max(0, height - crop_height))
-    right = min(width, left + crop_width)
-    bottom = min(height, top + crop_height)
-    return source.crop((left, top, right, bottom)).resize(
-        (width, height),
+    return (
+        left,
+        top,
+        min(width, left + crop_width),
+        min(height, top + crop_height),
+    )
+
+
+def zoom_crop(
+    image: Image.Image,
+    zoom: float,
+    center: tuple[float, float],
+) -> Image.Image:
+    """Compatibility helper used by tests and non-interactive callers."""
+    source = image.convert("RGBA")
+    if zoom <= 1.0:
+        return source.copy()
+    return source.crop(
+        _crop_box(source.size, zoom, center)
+    ).resize(
+        source.size,
         Image.Resampling.LANCZOS,
+    )
+
+
+def render_zoomed_view(
+    image: Image.Image,
+    zoom: float,
+    center: tuple[float, float],
+    output_size: tuple[int, int],
+    *,
+    interactive: bool,
+) -> Image.Image:
+    """Crop once and resize directly to the widget's display size."""
+    source = image.convert("RGBA")
+    crop = (
+        source
+        if zoom <= 1.0
+        else source.crop(_crop_box(source.size, zoom, center))
+    )
+    resample = (
+        Image.Resampling.BILINEAR
+        if interactive
+        else Image.Resampling.LANCZOS
+    )
+    return crop.resize(
+        (
+            max(1, int(output_size[0])),
+            max(1, int(output_size[1])),
+        ),
+        resample,
     )
 
 
@@ -83,7 +126,10 @@ def _popular_layers() -> list[str]:
 
 
 class MapTab(BaseMapTab):
-    """Interactive map with visible zoom, pan, marker, and overlay controls."""
+    """Interactive map with cached overlays and throttled zoom/pan rendering."""
+
+    INTERACTION_FRAME_MS = 16
+    QUALITY_DELAY_MS = 160
 
     def __init__(self, master, context):
         self.zoom_level = ctk.StringVar(value="Fit")
@@ -93,6 +139,11 @@ class MapTab(BaseMapTab):
         self._drag_origin: tuple[int, int] | None = None
         self._drag_center = self.zoom_center
         self.overlay_vars: dict[str, ctk.BooleanVar] = {}
+        self._composite_cache_key: tuple[Any, ...] | None = None
+        self._composite_cache_image: Image.Image | None = None
+        self._render_job: Any = None
+        self._quality_job: Any = None
+        self._last_render_signature: tuple[Any, ...] | None = None
         super().__init__(master, context)
 
         map_frame = self.map_label.master
@@ -244,6 +295,11 @@ class MapTab(BaseMapTab):
             lambda _event: self.step_zoom(-1),
             add="+",
         )
+        self.map_label.bind(
+            "<Configure>",
+            lambda _event: self._request_render(interactive=True),
+            add="+",
+        )
 
     def _zoom_number(self) -> float:
         raw = (
@@ -270,8 +326,10 @@ class MapTab(BaseMapTab):
             len(ZOOM_LEVELS) - 1,
             max(0, current + int(direction)),
         )
+        if target == current:
+            return
         self.zoom_level.set(ZOOM_LEVELS[target])
-        self.render_map()
+        self._request_render(interactive=True)
 
     def reset_zoom(self) -> None:
         self.zoom_level.set("Fit")
@@ -282,6 +340,7 @@ class MapTab(BaseMapTab):
         for variable in self.overlay_vars.values():
             variable.set(False)
         self.active_layer.set(NO_HEATMAP)
+        self._invalidate_composite_cache()
         self.render_map()
 
     def selected_overlay_layers(self) -> list[str]:
@@ -300,7 +359,8 @@ class MapTab(BaseMapTab):
 
     def _mouse_wheel_zoom(self, event: Any) -> None:
         delta = int(getattr(event, "delta", 0) or 0)
-        self.step_zoom(1 if delta > 0 else -1)
+        if delta:
+            self.step_zoom(1 if delta > 0 else -1)
 
     def _pan_start(self, event: Any) -> None:
         self._drag_origin = (
@@ -337,11 +397,12 @@ class MapTab(BaseMapTab):
                 ),
             ),
         )
-        self.render_map()
+        self._request_render(interactive=True)
 
     def _pan_end(self, _event: Any) -> None:
         self._drag_origin = None
         self._drag_center = self.zoom_center
+        self._schedule_quality_render()
 
     def _focus_clicked_point(self, event: Any) -> None:
         width = max(1, int(self.map_label.winfo_width()))
@@ -360,44 +421,129 @@ class MapTab(BaseMapTab):
         )
         if zoom <= 1.0:
             self.zoom_level.set("2x")
-        self.render_map()
+        self._request_render(interactive=True)
 
-    def render_map(self) -> None:
+    def _invalidate_composite_cache(self) -> None:
+        self._composite_cache_key = None
+        self._composite_cache_image = None
+        self._last_render_signature = None
+
+    def _composite_source(self) -> Image.Image | None:
         image = self._base_map_for_render()
         if image is None:
-            return
+            return None
 
         if self.map_image_clean is not None:
             self.context.clean_map_image = self.map_image_clean
         else:
             self.context.clean_map_image = image
 
-        selected = self.selected_overlay_layers()
-        rendered = composite_heatmaps(
-            image,
-            self.context.heatmap_bundle,
+        selected = tuple(self.selected_overlay_layers())
+        key = (
+            id(image),
+            image.size,
+            id(self.context.heatmap_bundle),
             selected,
-            opacity=HEATMAP_OPACITY,
-            point_radius=18,
-            blur_radius=HEATMAP_BLUR_RADIUS,
+            bool(self.show_server_icons.get()),
         )
-        rendered = zoom_crop(
-            rendered,
-            self._zoom_number(),
-            self.zoom_center,
-        )
+        if (
+            key == self._composite_cache_key
+            and self._composite_cache_image is not None
+        ):
+            return self._composite_cache_image
 
+        if selected:
+            rendered = composite_heatmaps(
+                image,
+                self.context.heatmap_bundle,
+                selected,
+                opacity=HEATMAP_OPACITY,
+                point_radius=18,
+                blur_radius=HEATMAP_BLUR_RADIUS,
+            )
+        else:
+            rendered = image.convert("RGBA")
+
+        self._composite_cache_key = key
+        self._composite_cache_image = rendered
+        self._last_render_signature = None
+        return rendered
+
+    def _display_size(
+        self,
+        source_size: tuple[int, int],
+    ) -> tuple[int, int]:
         available_width = max(
-            500,
-            self.map_label.winfo_width() - 20,
+            320,
+            int(self.map_label.winfo_width()) - 20,
         )
         available_height = max(
-            420,
-            self.map_label.winfo_height() - 20,
+            280,
+            int(self.map_label.winfo_height()) - 20,
         )
-        rendered.thumbnail(
-            (available_width, available_height),
-            Image.Resampling.LANCZOS,
+        width, height = source_size
+        scale = min(
+            available_width / max(1, width),
+            available_height / max(1, height),
+        )
+        return (
+            max(1, int(round(width * scale))),
+            max(1, int(round(height * scale))),
+        )
+
+    def _request_render(self, *, interactive: bool) -> None:
+        if self._render_job is None:
+            self._render_job = self.after(
+                self.INTERACTION_FRAME_MS,
+                lambda: self._run_requested_render(interactive),
+            )
+        self._schedule_quality_render()
+
+    def _run_requested_render(self, interactive: bool) -> None:
+        self._render_job = None
+        self._render(interactive=interactive)
+
+    def _schedule_quality_render(self) -> None:
+        if self._quality_job is not None:
+            try:
+                self.after_cancel(self._quality_job)
+            except Exception:
+                pass
+        self._quality_job = self.after(
+            self.QUALITY_DELAY_MS,
+            self._render_quality,
+        )
+
+    def _render_quality(self) -> None:
+        self._quality_job = None
+        self._render(interactive=False)
+
+    def render_map(self) -> None:
+        self._render(interactive=False)
+
+    def _render(self, *, interactive: bool) -> None:
+        source = self._composite_source()
+        if source is None:
+            return
+
+        output_size = self._display_size(source.size)
+        signature = (
+            self._composite_cache_key,
+            self.zoom_level.get(),
+            round(self.zoom_center[0], 5),
+            round(self.zoom_center[1], 5),
+            output_size,
+            interactive,
+        )
+        if signature == self._last_render_signature:
+            return
+
+        rendered = render_zoomed_view(
+            source,
+            self._zoom_number(),
+            self.zoom_center,
+            output_size,
+            interactive=interactive,
         )
         self.ctk_image = ctk.CTkImage(
             light_image=rendered,
@@ -408,6 +554,9 @@ class MapTab(BaseMapTab):
             image=self.ctk_image,
             text="",
         )
+        self._last_render_signature = signature
+
+        selected = self.selected_overlay_layers()
         layer_text = (
             ", ".join(selected)
             if selected
@@ -417,7 +566,8 @@ class MapTab(BaseMapTab):
             text=(
                 f"Zoom {self.zoom_level.get()} · {layer_text} · "
                 f"server icons {'shown' if self.show_server_icons.get() else 'hidden'}. "
-                "Mouse wheel zooms, drag pans, and double-click recenters."
+                "Cached overlays keep wheel zoom responsive; drag pans and "
+                "double-click recenters."
             )
         )
 
@@ -443,8 +593,8 @@ class MapTab(BaseMapTab):
         self._starter_busy = True
         self.map_status.configure(
             text=(
-                "Comparing resources, roads, terrain, water, monuments, "
-                "shops, events, and map-edge risk…"
+                "Comparing mainland access, buildable land, resources, roads, "
+                "terrain, water, monuments, shops, events, and map-edge risk…"
             )
         )
 
@@ -461,7 +611,7 @@ class MapTab(BaseMapTab):
             self._starter_spots = list(spots)
             if not spots:
                 self._set_hotspot_text(
-                    "No defensible starter recommendation could be calculated."
+                    "No practical mainland starter recommendation could be calculated."
                 )
                 return
             best = spots[0]
@@ -470,11 +620,14 @@ class MapTab(BaseMapTab):
                 1.0 - best.y_fraction,
             )
             self.zoom_level.set("4x")
-            self.render_map()
+            self._request_render(interactive=True)
             lines = [
                 "RECOMMENDED STARTER BUILDING SPOTS",
                 "",
-                "These are suitability estimates, not player-safety guarantees.",
+                (
+                    "Remote islands and water-locked cells are filtered out. "
+                    "Results remain suitability estimates, not player-safety guarantees."
+                ),
                 "",
             ]
             for index, spot in enumerate(spots, start=1):

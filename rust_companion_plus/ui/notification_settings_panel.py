@@ -198,8 +198,9 @@ class MarketplaceNotificationSettingsPanel(ctk.CTkFrame):
         self.status = ctk.CTkLabel(
             self,
             text=(
-                "Preset filters and watched items are applied before "
-                "duplicate suppression."
+                "Relative price alone does not create a steal. Automatic "
+                "deal alerts require a worthwhile mid/high-tier progression item; "
+                "explicit watched-item alerts can still notify for any listing."
             ),
             text_color=MUTED,
             anchor="w",

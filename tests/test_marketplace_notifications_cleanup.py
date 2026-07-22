@@ -24,7 +24,7 @@ class Offer:
     stock: int
     shop: str
     grid: str = "A1"
-    item_name: str = "Sulfur"
+    item_name: str = "Assault Rifle"
     currency_name: str = "Scrap"
     item_is_blueprint: bool = False
     currency_is_blueprint: bool = False
@@ -35,7 +35,7 @@ class Offer:
 
 
 class DealAlgorithmTests(unittest.TestCase):
-    def test_deep_robust_outlier_is_listing_error(self) -> None:
+    def test_deep_robust_outlier_is_high_tier_urgent_deal(self) -> None:
         rows = [
             Offer(1, 2, 100, 10, 20, "Error"),
             Offer(1, 2, 100, 100, 20, "Normal A"),
@@ -52,7 +52,7 @@ class DealAlgorithmTests(unittest.TestCase):
             ordered[0].row.shop,
         )
         self.assertEqual(
-            "POSSIBLE LISTING ERROR",
+            "CAN'T MISS",
             ordered[0].deal.label,
         )
         self.assertGreaterEqual(
@@ -92,7 +92,7 @@ class DealAlgorithmTests(unittest.TestCase):
         )
         self.assertEqual(1, len(alerts))
         self.assertEqual(
-            "POSSIBLE LISTING ERROR",
+            "CAN'T MISS",
             alerts[0].label,
         )
         self.assertEqual([], repeated)
@@ -103,14 +103,14 @@ class DealAlgorithmTests(unittest.TestCase):
         settings = normalize_notification_settings(
             {
                 "enabled": True,
-                "minimum_rating": "Possible errors only",
+                "minimum_rating": "Can't miss only",
                 "sound": False,
                 "popup_seconds": 999,
                 "repeat_hours": 0,
                 "max_alerts": 50,
             }
         )
-        self.assertEqual("Possible errors only", settings["minimum_rating"])
+        self.assertEqual("Can't miss only", settings["minimum_rating"])
         self.assertFalse(settings["sound"])
         self.assertEqual(60, settings["popup_seconds"])
         self.assertEqual(1, settings["repeat_hours"])

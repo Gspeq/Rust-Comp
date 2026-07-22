@@ -146,6 +146,60 @@ class RustPlusClient:
             except Exception:
                 pass
 
+    def fetch_team(
+        self,
+        credentials: RustCredentials,
+    ) -> list[dict[str, Any]]:
+        """Fetch only team state for accurate deaths without full marker scans."""
+        if not credentials.is_complete():
+            raise RustPlusRequestError(
+                "Complete the IP, port, Steam ID and player token first."
+            )
+        return asyncio.run(self._fetch_team(credentials))
+
+    async def _fetch_team(
+        self,
+        credentials: RustCredentials,
+    ) -> list[dict[str, Any]]:
+        RustError, RustSocket, ServerDetails = self._imports()
+        details = ServerDetails(
+            credentials.host,
+            credentials.port,
+            credentials.steam_id,
+            credentials.player_token,
+        )
+        socket = RustSocket(details)
+        try:
+            await socket.connect()
+            team_info = await socket.get_team_info()
+            if isinstance(team_info, RustError):
+                raise RustPlusRequestError(
+                    str(getattr(team_info, "reason", "Team request failed"))
+                )
+            rows: list[dict[str, Any]] = []
+            for member in getattr(team_info, "members", []) or []:
+                rows.append(
+                    _public_fields(
+                        member,
+                        [
+                            "steam_id",
+                            "name",
+                            "x",
+                            "y",
+                            "is_online",
+                            "spawn_time",
+                            "is_alive",
+                            "death_time",
+                        ],
+                    )
+                )
+            return rows
+        finally:
+            try:
+                await socket.disconnect()
+            except Exception:
+                pass
+
     def fetch_map(self, credentials: RustCredentials):
         if not credentials.is_complete():
             raise RustPlusRequestError("Complete the Rust+ credentials first.")

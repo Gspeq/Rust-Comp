@@ -530,7 +530,7 @@ class ShopsTab(ctk.CTkFrame):
 
         live_badge = ctk.CTkLabel(
             header,
-            text="  ● LIVE · 3 SEC  ",
+            text="  ● LIVE · 5 SEC MARKET  ",
             text_color=SUCCESS,
             fg_color=("#dcfce7", "#052e16"),
             corner_radius=999,

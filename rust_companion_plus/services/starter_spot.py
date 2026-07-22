@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import math
+from collections import deque
 from dataclasses import dataclass, field
 from typing import Any, Iterable
 
@@ -36,19 +37,19 @@ class StarterSpot:
 
 
 _POSITIVE_WEIGHTS: dict[str, float] = {
-    "Stone": 0.27,
+    "Stone": 0.23,
     "Metal": 0.18,
-    "Road Access": 0.13,
+    "Road Access": 0.18,
     "Temperate Biome": 0.12,
     "Junk Piles": 0.08,
-    "Coastline": 0.05,
-    "Water": 0.03,
     "Sulfur": 0.04,
+    "Water": 0.015,
 }
 _NEGATIVE_WEIGHTS: dict[str, float] = {
-    "Monument Proximity": 0.24,
-    "Rough Terrain": 0.11,
-    "Snow Biome": 0.07,
+    "Monument Proximity": 0.23,
+    "Rough Terrain": 0.16,
+    "Snow Biome": 0.08,
+    "Coastline": 0.05,
 }
 
 
@@ -103,6 +104,67 @@ def _nearest_distance(
     )
 
 
+def _local_average(
+    values: list[int],
+    resolution: int,
+    px: int,
+    py: int,
+    radius: int,
+) -> float:
+    samples: list[float] = []
+    for y in range(max(0, py - radius), min(resolution, py + radius + 1)):
+        for x in range(max(0, px - radius), min(resolution, px + radius + 1)):
+            samples.append(values[y * resolution + x] / 255.0)
+    return sum(samples) / len(samples) if samples else 0.0
+
+
+def _land_components(
+    water_values: list[int],
+    resolution: int,
+) -> tuple[list[int], dict[int, int], int]:
+    """Label connected landmasses so remote islands can be rejected."""
+    if not any(water_values):
+        labels = [1] * (resolution * resolution)
+        return labels, {1: resolution * resolution}, 1
+
+    land = [
+        value / 255.0 < 0.43
+        for value in water_values
+    ]
+    labels = [0] * (resolution * resolution)
+    sizes: dict[int, int] = {}
+    component = 0
+
+    for index, is_land in enumerate(land):
+        if not is_land or labels[index]:
+            continue
+        component += 1
+        queue: deque[int] = deque([index])
+        labels[index] = component
+        size = 0
+        while queue:
+            current = queue.popleft()
+            size += 1
+            x = current % resolution
+            y = current // resolution
+            for nx, ny in (
+                (x - 1, y),
+                (x + 1, y),
+                (x, y - 1),
+                (x, y + 1),
+            ):
+                if not (0 <= nx < resolution and 0 <= ny < resolution):
+                    continue
+                neighbor = ny * resolution + nx
+                if land[neighbor] and labels[neighbor] == 0:
+                    labels[neighbor] = component
+                    queue.append(neighbor)
+        sizes[component] = size
+
+    largest = max(sizes, key=sizes.get) if sizes else 0
+    return labels, sizes, largest
+
+
 def recommend_starter_spots(
     bundle: ResourceHeatmapBundle | None,
     world_size: int,
@@ -111,11 +173,11 @@ def recommend_starter_spots(
     limit: int = 3,
     resolution: int = 72,
 ) -> list[StarterSpot]:
-    """Rank plausible starter-base areas from map-derived evidence.
+    """Rank practical starter-base areas with mainland and escape-route checks.
 
-    This is intentionally a suitability recommendation, not a claim that a
-    location is safe. Rust player activity is dynamic and is not exposed by
-    the Rust+ map feed.
+    The result remains an estimate because Rust+ does not expose live player
+    density, but isolated islands and water-locked cells are no longer allowed
+    to win merely because they contain good resource pixels.
     """
     if bundle is None or world_size <= 0:
         return []
@@ -129,11 +191,26 @@ def recommend_starter_spots(
     if not resources:
         return []
 
-    resolution = max(36, min(128, int(resolution)))
+    resolution = max(48, min(128, int(resolution)))
     masks = {
         resource: _mask_values(bundle, resource, resolution)
         for resource in resources
     }
+    water_values = masks.get(
+        "Water",
+        [0] * (resolution * resolution),
+    )
+    component_labels, component_sizes, largest_component = _land_components(
+        water_values,
+        resolution,
+    )
+    largest_size = component_sizes.get(largest_component, 0)
+    total_land = sum(component_sizes.values())
+    minimum_viable_landmass = max(
+        int(total_land * 0.08),
+        int(largest_size * 0.34),
+        20,
+    )
 
     marker_rows = [
         marker
@@ -152,47 +229,101 @@ def recommend_starter_spots(
         elif marker_type == 3:
             shop_points.append(point)
 
-    candidates: list[tuple[float, int, int, dict[str, float], list[str], list[str]]] = []
-    for py in range(2, resolution - 2):
-        for px in range(2, resolution - 2):
+    candidates: list[
+        tuple[
+            float,
+            int,
+            int,
+            dict[str, float],
+            list[str],
+            list[str],
+        ]
+    ] = []
+
+    for py in range(3, resolution - 3):
+        for px in range(3, resolution - 3):
             index = py * resolution + px
             evidence = {
                 name: masks[name][index] / 255.0
                 for name in resources
             }
-            # Avoid recommending obvious water pixels.
-            if evidence.get("Water", 0.0) >= 0.72:
+            water_here = evidence.get("Water", 0.0)
+            local_water = _local_average(
+                water_values,
+                resolution,
+                px,
+                py,
+                radius=max(2, resolution // 30),
+            )
+            component = component_labels[index]
+            component_size = component_sizes.get(component, 0)
+            is_mainland = bool(
+                component
+                and component == largest_component
+            )
+            substantial_landmass = component_size >= minimum_viable_landmass
+
+            if (
+                water_here >= 0.58
+                or local_water >= 0.43
+                or not substantial_landmass
+            ):
                 continue
 
             fx = px / (resolution - 1)
             fy = 1.0 - py / (resolution - 1)
-            score = 0.42
+
+            road = evidence.get("Road Access", 0.0)
+            stone = evidence.get("Stone", 0.0)
+            metal = evidence.get("Metal", 0.0)
+            rough = evidence.get("Rough Terrain", 0.0)
+
+            # Require practical access instead of allowing one resource spike to
+            # carry an otherwise awkward or isolated build location.
+            if road < 0.08 and max(stone, metal) < 0.18:
+                continue
+            if rough >= 0.82:
+                continue
+
+            score = 0.30
             for name, weight in _POSITIVE_WEIGHTS.items():
                 score += evidence.get(name, 0.0) * weight
             for name, weight in _NEGATIVE_WEIGHTS.items():
                 score -= evidence.get(name, 0.0) * weight
 
+            if is_mainland:
+                score += 0.12
+            else:
+                component_ratio = (
+                    component_size / largest_size
+                    if largest_size
+                    else 0.0
+                )
+                score -= 0.14 + max(0.0, 0.55 - component_ratio) * 0.30
+
+            score -= local_water * 0.28
+
             edge_distance = min(fx, fy, 1.0 - fx, 1.0 - fy)
-            if edge_distance < 0.055:
-                score -= 0.23
-            elif edge_distance < 0.10:
-                score -= 0.10
+            if edge_distance < 0.065:
+                score -= 0.28
+            elif edge_distance < 0.12:
+                score -= 0.12
 
             event_distance = _nearest_distance(fx, fy, event_points)
             if event_distance < 0.08:
-                score -= 0.18
-            elif event_distance < 0.14:
-                score -= 0.08
+                score -= 0.20
+            elif event_distance < 0.15:
+                score -= 0.09
 
             shop_distance = _nearest_distance(fx, fy, shop_points)
-            # A vending area is useful nearby, but building directly beside it
-            # is normally high traffic.
-            if 0.08 <= shop_distance <= 0.23:
-                score += 0.04
-            elif shop_distance < 0.045:
-                score -= 0.08
+            if 0.09 <= shop_distance <= 0.20 and road >= 0.12:
+                score += 0.02
+            elif shop_distance < 0.05:
+                score -= 0.10
 
             reasons: list[str] = []
+            if is_mainland:
+                reasons.append("mainland access and multiple escape routes")
             ranked_positive = sorted(
                 (
                     (evidence.get(name, 0.0) * weight, name)
@@ -200,37 +331,40 @@ def recommend_starter_spots(
                 ),
                 reverse=True,
             )
+            labels = {
+                "Stone": "good stone access",
+                "Metal": "useful metal access",
+                "Road Access": "road and component access",
+                "Temperate Biome": "temperate starter climate",
+                "Junk Piles": "nearby roadside loot potential",
+                "Water": "limited nearby water access",
+                "Sulfur": "some sulfur potential",
+            }
             for value, name in ranked_positive:
                 if value < 0.035:
                     continue
-                labels = {
-                    "Stone": "good stone access",
-                    "Metal": "useful metal access",
-                    "Road Access": "road and component access",
-                    "Temperate Biome": "temperate starter climate",
-                    "Junk Piles": "nearby roadside loot potential",
-                    "Coastline": "coast access",
-                    "Water": "water access",
-                    "Sulfur": "some sulfur potential",
-                }
-                reasons.append(labels.get(name, name.lower()))
-                if len(reasons) >= 3:
+                label = labels.get(name, name.lower())
+                if label not in reasons:
+                    reasons.append(label)
+                if len(reasons) >= 4:
                     break
-            if 0.08 <= shop_distance <= 0.23:
-                reasons.append("a shop is nearby without being directly adjacent")
 
             cautions: list[str] = []
+            if not is_mainland:
+                cautions.append("separate landmass may limit escape routes")
+            if local_water >= 0.24:
+                cautions.append("water or coastline reduces nearby buildable area")
             if evidence.get("Monument Proximity", 0.0) >= 0.45:
                 cautions.append("closer to monument traffic")
-            if evidence.get("Rough Terrain", 0.0) >= 0.55:
+            if rough >= 0.55:
                 cautions.append("rougher terrain may complicate building")
             if evidence.get("Snow Biome", 0.0) >= 0.50:
                 cautions.append("cold-biome exposure")
             if evidence.get("Sulfur", 0.0) >= 0.70:
                 cautions.append("high sulfur areas can attract geared players")
-            if event_distance < 0.14:
+            if event_distance < 0.15:
                 cautions.append("a live world event is currently nearby")
-            if edge_distance < 0.10:
+            if edge_distance < 0.12:
                 cautions.append("near the map edge")
 
             candidates.append(
@@ -239,25 +373,35 @@ def recommend_starter_spots(
 
     candidates.sort(key=lambda row: row[0], reverse=True)
     selected: list[StarterSpot] = []
-    minimum_separation = 0.14
+    minimum_separation = 0.13
     for raw_score, px, py, evidence, reasons, cautions in candidates:
+        if raw_score < 0.42:
+            continue
         fx = px / (resolution - 1)
         fy = 1.0 - py / (resolution - 1)
         if any(
-            math.hypot(fx - row.x_fraction, fy - row.y_fraction)
+            math.hypot(
+                fx - row.x_fraction,
+                fy - row.y_fraction,
+            )
             < minimum_separation
             for row in selected
         ):
             continue
 
-        normalized_score = int(round(max(0.0, min(1.0, raw_score)) * 100))
+        normalized_score = int(
+            round(max(0.0, min(1.0, raw_score)) * 100)
+        )
         selected.append(
             StarterSpot(
                 x_fraction=round(fx, 6),
                 y_fraction=round(fy, 6),
                 score=normalized_score,
                 grid=grid_reference(fx, fy, world_size),
-                reasons=tuple(reasons or ["balanced access to the analyzed map"]),
+                reasons=tuple(
+                    reasons
+                    or ["balanced mainland access to the analyzed map"]
+                ),
                 cautions=tuple(cautions),
                 evidence={
                     name: round(value, 3)

@@ -3,13 +3,22 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import re
 import statistics
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 
-HISTORY_VERSION = 2
+HISTORY_VERSION = 3
 MAX_HISTORY_SAMPLES = 120
+
+
+@dataclass(frozen=True, slots=True)
+class ItemValueProfile:
+    tier: int
+    tier_name: str
+    actionable: bool
+    common: bool
 
 
 @dataclass(frozen=True, slots=True)
@@ -26,16 +35,192 @@ class DealScore:
     anomaly_score: float = 0.0
     reason: str = ""
     alert_level: str = ""
-
-    @property
-    def discount_percent(self) -> int:
-        return int(round(self.discount_fraction * 100))
+    item_tier: int = 0
+    item_tier_name: str = "Common"
+    actionable: bool = False
+    payment_tier: int = 0
 
 
 @dataclass(frozen=True, slots=True)
 class ScoredShopRow:
     row: Any
     deal: DealScore
+
+
+# Order is important: endgame and high-tier terms are matched before broad
+# words such as "metal", "stone", or "wood".
+_ENDGAME_TERMS = (
+    "m249",
+    "multiple grenade launcher",
+    "timed explosive charge",
+    "c4",
+    "rocket",
+    "explosive 5.56",
+    "incendiary rocket",
+    "high velocity rocket",
+    "supply signal",
+)
+_HIGH_TERMS = (
+    "assault rifle",
+    "lr-300",
+    "lr300",
+    "mp5a4",
+    "mp5",
+    "l96 rifle",
+    "bolt action rifle",
+    "rocket launcher",
+    "auto turret",
+    "sam site",
+    "armored door",
+    "armored double door",
+    "metal facemask",
+    "metal chest plate",
+    "heavy plate",
+    "night vision goggles",
+)
+_MID_TERMS = (
+    "garage door",
+    "rifle body",
+    "smg body",
+    "semi automatic body",
+    "tech trash",
+    "targeting computer",
+    "cctv camera",
+    "wind turbine",
+    "large rechargeable battery",
+    "large battery",
+    "semi-automatic rifle",
+    "semi automatic rifle",
+    "thompson",
+    "custom smg",
+    "python revolver",
+    "pump shotgun",
+    "flame turret",
+    "shotgun trap",
+    "gears",
+    "metal pipe",
+    "road signs",
+    "sheet metal",
+    "sewing kit",
+)
+_EARLY_TERMS = (
+    "revolver",
+    "double barrel",
+    "waterpipe shotgun",
+    "crossbow",
+    "hazmat suit",
+    "medical syringe",
+    "satchel charge",
+    "bean can grenade",
+    "small rechargeable battery",
+    "medium rechargeable battery",
+)
+_COMMON_TERMS = (
+    "hunting bow",
+    "compound bow",
+    "wooden arrow",
+    "bone arrow",
+    "fire arrow",
+    "nailgun",
+    "stone pickaxe",
+    "stone hatchet",
+    "wood",
+    "stones",
+    "stone",
+    "cloth",
+    "leather",
+    "bone fragments",
+    "animal fat",
+    "charcoal",
+    "metal fragments",
+    "low grade fuel",
+    "crude oil",
+    "water",
+    "corn",
+    "pumpkin",
+    "mushroom",
+    "potato",
+    "apple",
+    "chicken",
+    "wolf meat",
+    "bear meat",
+    "building plan",
+    "hammer",
+    "torch",
+    "camp fire",
+    "campfire",
+)
+
+# Payment tiers are intentionally broad. They are not exchange rates; they only
+# prevent primitive goods bought with strategically valuable resources from
+# being promoted as urgent purchases.
+_STRATEGIC_PAYMENT_TERMS = (
+    "high quality metal",
+    "hqm",
+    "sulfur",
+    "gun powder",
+    "gunpowder",
+    "explosives",
+    "scrap",
+    "tech trash",
+    "targeting computer",
+    "cctv camera",
+    "rifle body",
+    "smg body",
+)
+_COMPONENT_PAYMENT_TERMS = (
+    "gears",
+    "metal pipe",
+    "road signs",
+    "sheet metal",
+    "sewing kit",
+    "rope",
+)
+
+
+def _normalized_name(value: Any) -> str:
+    return " ".join(
+        re.sub(r"[^a-z0-9.+-]+", " ", str(value or "").casefold()).split()
+    )
+
+
+def _contains_any(text: str, terms: Sequence[str]) -> bool:
+    return any(term in text for term in terms)
+
+
+def item_value_profile(name: Any, item_id: Any = 0) -> ItemValueProfile:
+    """Classify whether a listing is an urgent progression purchase.
+
+    This deliberately does not attempt a universal Rust exchange-rate table.
+    Same-market price evidence remains the price model; this profile only
+    decides whether a relative bargain is important enough to call a steal.
+    """
+    text = _normalized_name(name)
+    _ = item_id
+
+    if _contains_any(text, _ENDGAME_TERMS):
+        return ItemValueProfile(4, "Endgame", True, False)
+    if _contains_any(text, _HIGH_TERMS):
+        return ItemValueProfile(3, "High tier", True, False)
+    if _contains_any(text, _MID_TERMS):
+        return ItemValueProfile(2, "Mid tier", True, False)
+    if _contains_any(text, _EARLY_TERMS):
+        return ItemValueProfile(1, "Early progression", False, False)
+    if _contains_any(text, _COMMON_TERMS):
+        return ItemValueProfile(0, "Common / primitive", False, True)
+
+    # Unknown items remain visible and are price-compared, but they need very
+    # strong evidence before they can be promoted beyond GOOD VALUE.
+    return ItemValueProfile(1, "Unclassified progression", False, False)
+
+
+def payment_value_tier(name: Any) -> int:
+    text = _normalized_name(name)
+    if _contains_any(text, _STRATEGIC_PAYMENT_TERMS):
+        return 2
+    if _contains_any(text, _COMPONENT_PAYMENT_TERMS):
+        return 1
+    return 0
 
 
 def _market_key(row: Any) -> str:
@@ -149,6 +334,113 @@ def _benchmark(
     return unit_cost, "single-listing estimate"
 
 
+def _progression_gate(
+    *,
+    numeric_score: float,
+    discount: float,
+    confidence: str,
+    peer_rank: int,
+    peer_count: int,
+    history_count: int,
+    anomaly_score: float,
+    item_profile: ItemValueProfile,
+    payment_tier: int,
+) -> tuple[int, str, str]:
+    """Convert relative cheapness into a useful, progression-aware rating."""
+    score = int(round(max(0.0, min(100.0, numeric_score))))
+    evidence_count = peer_count + min(history_count, 6)
+    top_rank = peer_rank == 1
+    strong_evidence = (
+        confidence == "High"
+        or (confidence == "Medium" and evidence_count >= 4)
+    )
+
+    # Primitive and common offers can be cheap relative to their peers without
+    # being strategically urgent. This directly blocks hunting bows, wood,
+    # stones, and similar goods from STEAL/CAN'T MISS.
+    if item_profile.tier == 0:
+        # A relative discount on primitive/common goods is useful context, but
+        # it is not a strategically meaningful marketplace deal.
+        score = min(score, 58)
+        if discount <= -0.22:
+            return min(score, 28), "OVERPRICED", ""
+        return score, "FAIR", ""
+
+    # Early or unknown progression goods may be useful, but are never an
+    # automatic buy based only on marketplace statistics.
+    if item_profile.tier == 1:
+        score = min(score, 74)
+        if discount >= 0.14 and confidence != "Low":
+            return score, "GOOD VALUE", ""
+        if discount <= -0.22:
+            return min(score, 28), "OVERPRICED", ""
+        return score, "FAIR", ""
+
+    # Paying a strategic currency for a merely mid-tier item needs stronger
+    # proof. This does not ban the trade; it raises the urgent-buy threshold.
+    strategic_payment_penalty = (
+        0.07
+        if payment_tier >= 2 and item_profile.tier == 2
+        else 0.0
+    )
+    effective_discount = discount - strategic_payment_penalty
+
+    extreme_outlier = (
+        anomaly_score >= 2.5
+        and discount >= 0.50
+        and top_rank
+        and strong_evidence
+    )
+
+    if item_profile.tier >= 4:
+        if (
+            effective_discount >= 0.34
+            and score >= 90
+            and top_rank
+            and strong_evidence
+        ):
+            return score, "CAN'T MISS", "deal"
+        if (
+            effective_discount >= 0.18
+            and score >= 80
+            and top_rank
+            and confidence != "Low"
+        ) or extreme_outlier:
+            return max(score, 82), "STEAL", "deal"
+    elif item_profile.tier == 3:
+        if (
+            effective_discount >= 0.42
+            and score >= 92
+            and top_rank
+            and strong_evidence
+        ):
+            return score, "CAN'T MISS", "deal"
+        if (
+            effective_discount >= 0.24
+            and score >= 84
+            and top_rank
+            and confidence != "Low"
+        ) or extreme_outlier:
+            return max(score, 84), "STEAL", "deal"
+    else:
+        if (
+            effective_discount >= 0.34
+            and score >= 87
+            and top_rank
+            and strong_evidence
+        ) or (
+            extreme_outlier
+            and effective_discount >= 0.28
+        ):
+            return max(score, 87), "STEAL", "deal"
+
+    if effective_discount >= 0.10 and confidence != "Low":
+        return min(score, 79), "GOOD VALUE", ""
+    if discount <= -0.22:
+        return min(score, 28), "OVERPRICED", ""
+    return min(score, 76), "FAIR", ""
+
+
 def _reason(
     *,
     discount: float,
@@ -159,6 +451,9 @@ def _reason(
     confidence: str,
     stock: int,
     anomaly_score: float,
+    item_profile: ItemValueProfile,
+    payment_tier: int,
+    label: str,
 ) -> str:
     if discount > 0.005:
         direction = f"{round(discount * 100):.0f}% below"
@@ -166,21 +461,40 @@ def _reason(
         direction = f"{abs(round(discount * 100)):.0f}% above"
     else:
         direction = "near"
+
     rank_text = (
         f"price rank {peer_rank} of {peer_count} live offers"
         if peer_count > 1
         else "only one live offer"
+    )
+    progression = (
+        f"{item_profile.tier_name.lower()} item"
+        + (
+            "; urgent-buy eligible"
+            if item_profile.actionable
+            else "; not treated as an urgent progression purchase"
+        )
+    )
+    payment_text = (
+        "; strategically valuable payment requested"
+        if payment_tier >= 2
+        else ""
     )
     anomaly_text = (
         f"; robust outlier score {anomaly_score:.1f}"
         if anomaly_score >= 1.5
         else ""
     )
+    cap_text = (
+        "; relative cheapness is capped below STEAL"
+        if item_profile.tier < 2 and label in {"FAIR", "GOOD VALUE"}
+        else ""
+    )
     return (
         f"{direction} the {benchmark_source}; {rank_text}; "
         f"{history_count} historical sample(s); "
-        f"{confidence.lower()} confidence; stock {stock}"
-        f"{anomaly_text}."
+        f"{confidence.lower()} confidence; stock {stock}; "
+        f"{progression}{payment_text}{anomaly_text}{cap_text}."
     )
 
 
@@ -212,6 +526,13 @@ def score_shop_rows(
         stock = max(
             0,
             int(getattr(row, "stock", 0) or 0),
+        )
+        item_profile = item_value_profile(
+            getattr(row, "item_name", ""),
+            getattr(row, "item_id", 0),
+        )
+        payment_tier = payment_value_tier(
+            getattr(row, "currency_name", "")
         )
 
         live_peers = list(current)
@@ -280,7 +601,7 @@ def score_shop_rows(
             )
 
         if not spread_samples:
-            score = 50
+            score = 45
             label = "UNPRICED"
             alert_level = ""
         else:
@@ -301,47 +622,17 @@ def score_shop_rows(
                     5.0,
                     math.log2(stock + 1.0),
                 )
-            score = int(
-                round(
-                    max(
-                        0.0,
-                        min(100.0, numeric_score),
-                    )
-                )
+            score, label, alert_level = _progression_gate(
+                numeric_score=numeric_score,
+                discount=discount,
+                confidence=confidence,
+                peer_rank=peer_rank,
+                peer_count=peer_count,
+                history_count=history_count,
+                anomaly_score=anomaly_score,
+                item_profile=item_profile,
+                payment_tier=payment_tier,
             )
-
-            possible_error = (
-                discount >= 0.62
-                and score >= 95
-                and confidence != "Low"
-                and anomaly_score >= 2.5
-                and (
-                    peer_count >= 3
-                    or history_count >= 3
-                )
-            )
-            if possible_error:
-                label = "POSSIBLE LISTING ERROR"
-                alert_level = "listing_error"
-            elif (
-                confidence != "Low"
-                and score >= 90
-                and discount >= 0.30
-            ):
-                label = "CAN'T MISS"
-                alert_level = "deal"
-            elif score >= 78 and discount >= 0.16:
-                label = "STEAL"
-                alert_level = "deal"
-            elif score >= 64 and discount >= 0.07:
-                label = "GOOD VALUE"
-                alert_level = ""
-            elif score <= 28 and discount <= -0.22:
-                label = "OVERPRICED"
-                alert_level = ""
-            else:
-                label = "FAIR"
-                alert_level = ""
 
         if stock <= 0:
             score = min(int(score), 15)
@@ -377,8 +668,15 @@ def score_shop_rows(
                         confidence=confidence,
                         stock=stock,
                         anomaly_score=anomaly_score,
+                        item_profile=item_profile,
+                        payment_tier=payment_tier,
+                        label=label,
                     ),
                     alert_level=alert_level,
+                    item_tier=item_profile.tier,
+                    item_tier_name=item_profile.tier_name,
+                    actionable=item_profile.actionable,
+                    payment_tier=payment_tier,
                 ),
             )
         )
@@ -403,9 +701,7 @@ def score_shop_rows(
             updated_prices[key] = updated_prices[
                 key
             ][-MAX_HISTORY_SAMPLES:]
-        normalized_history["last_signature"] = (
-            signature
-        )
+        normalized_history["last_signature"] = signature
     normalized_history["prices"] = updated_prices
     normalized_history["version"] = HISTORY_VERSION
     return scored, normalized_history
@@ -417,11 +713,18 @@ def sort_scored_rows(
 ) -> list[ScoredShopRow]:
     values = list(rows)
     if mode == "Best value":
+        urgency = {
+            "CAN'T MISS": 0,
+            "STEAL": 1,
+            "GOOD VALUE": 2,
+            "FAIR": 3,
+            "UNPRICED": 4,
+            "OVERPRICED": 5,
+            "OUT OF STOCK": 6,
+        }
         key = lambda item: (
-            0
-            if item.deal.label
-            == "POSSIBLE LISTING ERROR"
-            else 1,
+            urgency.get(item.deal.label, 4),
+            -item.deal.item_tier,
             -item.deal.score,
             -item.deal.discount_fraction,
             0
@@ -452,91 +755,29 @@ def sort_scored_rows(
         )
     elif mode == "Shop A-Z":
         key = lambda item: (
-            str(
-                getattr(
-                    item.row,
-                    "shop",
-                    "",
-                )
-            ).casefold(),
-            str(
-                getattr(
-                    item.row,
-                    "item_name",
-                    "",
-                )
-            ).casefold(),
-            float(
-                getattr(
-                    item.row,
-                    "cost",
-                    0,
-                )
-                or 0
-            ),
+            str(getattr(item.row, "shop", "")).casefold(),
+            str(getattr(item.row, "item_name", "")).casefold(),
+            float(getattr(item.row, "cost", 0) or 0),
         )
     elif mode == "Grid":
         key = lambda item: (
-            str(
-                getattr(
-                    item.row,
-                    "grid",
-                    "",
-                )
-            ),
-            str(
-                getattr(
-                    item.row,
-                    "shop",
-                    "",
-                )
-            ).casefold(),
+            str(getattr(item.row, "grid", "")),
+            str(getattr(item.row, "shop", "")).casefold(),
         )
     elif mode == "Lowest cost":
         key = lambda item: (
             item.deal.unit_cost,
-            str(
-                getattr(
-                    item.row,
-                    "item_name",
-                    "",
-                )
-            ).casefold(),
+            str(getattr(item.row, "item_name", "")).casefold(),
         )
     elif mode == "Highest stock":
         key = lambda item: (
-            -int(
-                getattr(
-                    item.row,
-                    "stock",
-                    0,
-                )
-                or 0
-            ),
-            str(
-                getattr(
-                    item.row,
-                    "item_name",
-                    "",
-                )
-            ).casefold(),
+            -int(getattr(item.row, "stock", 0) or 0),
+            str(getattr(item.row, "item_name", "")).casefold(),
         )
     else:
         key = lambda item: (
-            str(
-                getattr(
-                    item.row,
-                    "item_name",
-                    "",
-                )
-            ).casefold(),
+            str(getattr(item.row, "item_name", "")).casefold(),
             item.deal.unit_cost,
-            str(
-                getattr(
-                    item.row,
-                    "shop",
-                    "",
-                )
-            ).casefold(),
+            str(getattr(item.row, "shop", "")).casefold(),
         )
     return sorted(values, key=key)

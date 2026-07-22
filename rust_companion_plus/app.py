@@ -410,6 +410,30 @@ class AppContext:
                 snapshot,
             )
 
+    def apply_team_update(
+        self,
+        team_rows: list[dict[str, Any]],
+    ) -> bool:
+        """Merge one-second team state into the last full snapshot."""
+        previous = self.snapshot
+        if previous is None:
+            return False
+        current = ServerSnapshot(
+            server=dict(previous.server),
+            team=[dict(row) for row in team_rows],
+            markers=list(previous.markers),
+            server_time=previous.server_time,
+        )
+        self.snapshot = current
+        self.rustplus_live = True
+        self.last_live_update_at = (
+            datetime.now()
+            .astimezone()
+            .isoformat(timespec="seconds")
+        )
+        self._record_snapshot_changes(previous, current)
+        return True
+
     def _record_snapshot_changes(
         self,
         previous: ServerSnapshot,
@@ -649,8 +673,11 @@ class AppContext:
 
 class RustCompanionApp(ctk.CTk):
     DETECTION_INTERVAL_MS = 10_000
-    # One-second live snapshots reduce the gap between the last reported alive position and death detection without overlapping requests.
-    RUSTPLUS_INTERVAL_MS = 1_000
+    # Full server/marker snapshots are intentionally slower; lightweight
+    # team-only polling preserves death accuracy without rescoring hundreds of
+    # vending offers or refreshing every tab once per second.
+    RUSTPLUS_INTERVAL_MS = 5_000
+    TEAM_INTERVAL_MS = 1_000
     BATTLEMETRICS_INTERVAL_SECONDS = 120
 
 
@@ -702,6 +729,7 @@ class RustCompanionApp(ctk.CTk):
         self.finder = RustServerFinder(state.store)
         self._detection_busy = False
         self._rustplus_busy = False
+        self._team_busy = False
         self._last_battlemetrics_refresh = 0.0
         self._last_rustplus_error = ""
         self._last_rustplus_error_at = 0.0
@@ -898,6 +926,7 @@ class RustCompanionApp(ctk.CTk):
 
         if self.context.credentials.is_complete():
             self.after(750, self.refresh_rustplus_now)
+            self.after(1_250, self.refresh_team_now)
 
 
     def open_guide(
@@ -948,7 +977,10 @@ class RustCompanionApp(ctk.CTk):
 
 
 
-    def notify_data_changed(self) -> None:
+    def notify_data_changed(
+        self,
+        tab_names: tuple[str, ...] | None = None,
+    ) -> None:
         snapshot_available = self.context.snapshot is not None
         detected = bool(
             (
@@ -981,7 +1013,16 @@ class RustCompanionApp(ctk.CTk):
             text=text,
             text_color=color,
         )
-        for tab in self.tabs.values():
+        targets = (
+            self.tabs.values()
+            if tab_names is None
+            else (
+                self.tabs[name]
+                for name in tab_names
+                if name in self.tabs
+            )
+        )
+        for tab in targets:
             callback = getattr(
                 tab,
                 "on_context_updated",
@@ -1259,8 +1300,53 @@ class RustCompanionApp(ctk.CTk):
 
 
 
+    def refresh_team_now(self) -> None:
+        if self._team_busy:
+            return
+        if self._rustplus_busy:
+            self.after(250, self.refresh_team_now)
+            return
+        if not self.context.credentials.is_complete():
+            self.after(
+                self.TEAM_INTERVAL_MS,
+                self.refresh_team_now,
+            )
+            return
+
+        self._team_busy = True
+
+        def success(team_rows: list[dict[str, Any]]) -> None:
+            self._team_busy = False
+            if self.context.apply_team_update(team_rows):
+                self.notify_data_changed(("Overview", "Team"))
+            self.after(
+                self.TEAM_INTERVAL_MS,
+                self.refresh_team_now,
+            )
+
+        def failure(_exc: Exception) -> None:
+            self._team_busy = False
+            # The slower full-snapshot loop owns connection warnings. Team
+            # polling failures are intentionally quiet to avoid timeline spam.
+            self.after(
+                self.TEAM_INTERVAL_MS,
+                self.refresh_team_now,
+            )
+
+        self._background(
+            lambda: self.context.rust.fetch_team(
+                self.context.credentials
+            ),
+            success,
+            failure,
+        )
+
+
     def refresh_rustplus_now(self) -> None:
         if self._rustplus_busy:
+            return
+        if self._team_busy:
+            self.after(250, self.refresh_rustplus_now)
             return
         if not self.context.credentials.is_complete():
             self.context.rustplus_live = False

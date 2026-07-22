@@ -352,7 +352,9 @@ class SourceContractTests(unittest.TestCase):
     def test_death_poll_is_one_second_and_guide_is_dashboard_only(self) -> None:
         app = self.read("rust_companion_plus/app.py")
         dashboard = self.read("rust_companion_plus/ui/tabs/dashboard.py")
-        self.assertIn("RUSTPLUS_INTERVAL_MS = 1_000", app)
+        self.assertIn("RUSTPLUS_INTERVAL_MS = 5_000", app)
+        self.assertIn("TEAM_INTERVAL_MS = 1_000", app)
+        self.assertIn("def refresh_team_now", app)
         self.assertNotIn("self.guide_button", app)
         self.assertIn('text="? Feature Guide"', dashboard)
         self.assertIn("open_feature_guide", dashboard)

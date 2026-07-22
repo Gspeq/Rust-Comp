@@ -131,7 +131,7 @@ class StarterSpotTests(unittest.TestCase):
 
 
 class MarketplaceValueTests(unittest.TestCase):
-    def test_best_value_is_visible_and_places_cheapest_unit_trade_first(self) -> None:
+    def test_best_value_orders_common_trades_without_overrating_them(self) -> None:
         rows = [
             Offer(1, 2, 100, 50, 20, "Cheap"),
             Offer(1, 2, 100, 100, 20, "Normal"),
@@ -141,7 +141,8 @@ class MarketplaceValueTests(unittest.TestCase):
         ordered = sort_scored_rows(scored, "Best value")
         self.assertEqual("Cheap", ordered[0].row.shop)
         self.assertGreater(ordered[0].deal.score, ordered[-1].deal.score)
-        self.assertIn(ordered[0].deal.label, {"STEAL", "CAN'T MISS", "GOOD VALUE"})
+        self.assertEqual("FAIR", ordered[0].deal.label)
+        self.assertFalse(ordered[0].deal.actionable)
 
 
 class HubContractTests(unittest.TestCase):

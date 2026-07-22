@@ -11,8 +11,7 @@ NOTIFICATION_SETTINGS_KEY = "marketplace_notification_settings_v1"
 MINIMUM_RATING_OPTIONS = (
     "Good value or better",
     "Steal or better",
-    "Can't miss or errors",
-    "Possible errors only",
+    "Can't miss only",
 )
 LOOT_PRESETS = (
     "All loot",
@@ -23,9 +22,6 @@ LOOT_PRESETS = (
     "Custom items only",
 )
 
-# These are intentionally readable search terms rather than item IDs. The item
-# catalog already normalizes Rust+ IDs to display names, and partial matching
-# also covers common variants such as doors, ammunition, and blueprints.
 LOOT_PRESET_TERMS: dict[str, tuple[str, ...]] = {
     "All loot": (),
     "Basic loot": (
@@ -126,7 +122,6 @@ DEFAULT_NOTIFICATION_SETTINGS = {
     "in_app_notifications": True,
 }
 ALERT_LABELS = {
-    "POSSIBLE LISTING ERROR",
     "CAN'T MISS",
     "STEAL",
     "GOOD VALUE",
@@ -184,6 +179,15 @@ def normalize_notification_settings(raw: Any) -> dict[str, Any]:
             "minimum_rating",
             DEFAULT_NOTIFICATION_SETTINGS["minimum_rating"],
         )
+    )
+    # Migrate settings saved by the earlier listing-error experiment.
+    legacy_minimums = {
+        "Possible errors only": "Steal or better",
+        "Can't miss or errors": "Can't miss only",
+    }
+    minimum_rating = legacy_minimums.get(
+        minimum_rating,
+        minimum_rating,
     )
     if minimum_rating not in MINIMUM_RATING_OPTIONS:
         minimum_rating = DEFAULT_NOTIFICATION_SETTINGS["minimum_rating"]
@@ -372,20 +376,38 @@ def _preset_match(scored: Any, settings: dict[str, Any]) -> bool:
 
 
 def _rating_eligible(label: str, score: int, minimum: str) -> bool:
-    if minimum == "Possible errors only":
-        return label == "POSSIBLE LISTING ERROR"
-    if minimum == "Can't miss or errors":
-        return label in {
-            "POSSIBLE LISTING ERROR",
-            "CAN'T MISS",
-        }
+    _ = score
+    if minimum == "Can't miss only":
+        return label == "CAN'T MISS"
     if minimum == "Steal or better":
         return label in {
-            "POSSIBLE LISTING ERROR",
             "CAN'T MISS",
             "STEAL",
-        } and not (label == "STEAL" and score < 80)
+        }
     return label in ALERT_LABELS
+
+
+def _ordinary_item_is_actionable(scored: Any) -> bool:
+    deal = scored.deal
+    explicit = getattr(deal, "actionable", None)
+    if explicit is not None:
+        return bool(explicit)
+    tier = getattr(deal, "item_tier", None)
+    if tier is not None:
+        try:
+            return int(tier) >= 2
+        except (TypeError, ValueError):
+            pass
+
+    # Compatibility for tests or cached records created before item tiers were
+    # stored in DealScore.
+    from rust_companion_plus.services.shop_value import item_value_profile
+
+    row = scored.row
+    return item_value_profile(
+        getattr(row, "item_name", ""),
+        getattr(row, "item_id", 0),
+    ).actionable
 
 
 def _eligible(
@@ -418,6 +440,8 @@ def _eligible(
     label = str(deal.label)
     if str(deal.confidence) == "Low":
         return False, False
+    if not _ordinary_item_is_actionable(scored):
+        return False, False
     return (
         _rating_eligible(
             label,
@@ -439,9 +463,9 @@ def _alert(
     label = "WATCHED ITEM" if watched_item else str(deal.label)
     severity = (
         3
-        if str(deal.label) == "POSSIBLE LISTING ERROR"
-        else 2
         if str(deal.label) == "CAN'T MISS"
+        else 2
+        if str(deal.label) == "STEAL"
         else 1
     )
     item_name = str(getattr(row, "item_name", "Item") or "Item")
@@ -454,10 +478,13 @@ def _alert(
     )
     if watched_item:
         title = f"Watched item listed: {item_name}"
-    elif str(deal.label) == "POSSIBLE LISTING ERROR":
-        title = f"Possible listing error: {item_name}"
     else:
-        title = f"{str(deal.label).title()}: {item_name}"
+        display_label = {
+            "CAN'T MISS": "Can't Miss",
+            "STEAL": "Steal",
+            "GOOD VALUE": "Good Value",
+        }.get(str(deal.label), str(deal.label).title())
+        title = f"{display_label}: {item_name}"
     reason = str(getattr(deal, "reason", "") or "")
     message = (
         f"{shop} at {grid}: {quantity} x {item_name} for "
@@ -496,7 +523,7 @@ def collect_deal_alerts(
         return (
             [],
             {
-                "version": 2,
+                "version": 3,
                 "updated_at": current.isoformat(timespec="seconds"),
                 "seen": seen,
             },
@@ -543,7 +570,7 @@ def collect_deal_alerts(
     return (
         candidates[:limit],
         {
-            "version": 2,
+            "version": 3,
             "updated_at": current.isoformat(timespec="seconds"),
             "seen": seen,
         },
