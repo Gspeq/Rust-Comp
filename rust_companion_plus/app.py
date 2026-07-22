@@ -34,6 +34,7 @@ from rust_companion_plus.services.deal_notifications import (
     normalize_notification_settings,
 )
 from rust_companion_plus.ui.notifications import DealNotificationCenter
+from rust_companion_plus.ui.guide import GuideWindow
 # FEATURE_HUBS_RETENTION_V1
 
 
@@ -820,19 +821,26 @@ class RustCompanionApp(ctk.CTk):
             ),
         }
 
-        ctk.CTkLabel(
-            self.sidebar,
-            text="NAVIGATION",
-            text_color=("#64748b", "#64748b"),
-            font=ctk.CTkFont(
-                size=10,
-                weight="bold",
+
+        self.guide_window = GuideWindow(self)
+        self.guide_button = ctk.CTkButton(
+            self.content,
+            text="? Guide",
+            width=72,
+            height=28,
+            corner_radius=8,
+            fg_color=("gray85", "#1f2937"),
+            hover_color=("gray75", "#334155"),
+            text_color=("#111827", "#f8fafc"),
+            command=lambda: self.open_guide(
+                self.current_tab or "Overview"
             ),
-            anchor="w",
-        ).pack(
-            fill="x",
-            padx=22,
-            pady=(4, 6),
+        )
+        self.guide_button.place(
+            relx=1.0,
+            x=-28,
+            y=10,
+            anchor="ne",
         )
 
         self.nav_buttons: dict[str, ctk.CTkButton] = {}
@@ -910,6 +918,15 @@ class RustCompanionApp(ctk.CTk):
             self.after(750, self.refresh_rustplus_now)
 
 
+    def open_guide(
+        self,
+        section: str | None = None,
+    ) -> None:
+        self.guide_window.open(
+            section or self.current_tab or "Overview"
+        )
+
+
     def show_tab(self, name: str) -> None:
         if self.current_tab:
             self.tabs[self.current_tab].grid_forget()
@@ -921,6 +938,11 @@ class RustCompanionApp(ctk.CTk):
             padx=20,
             pady=20,
         )
+
+        self.guide_button.configure(
+            command=lambda selected=name: self.open_guide(selected)
+        )
+        self.guide_button.lift()
 
         for label, button in self.nav_buttons.items():
             active = label == name

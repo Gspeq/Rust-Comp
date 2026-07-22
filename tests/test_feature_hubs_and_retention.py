@@ -178,7 +178,7 @@ class HubContractTests(unittest.TestCase):
         self.assertIn('"Saved Servers":', app)
         self.assertNotIn('"Utilities":', app)
         self.assertNotIn("ToolsTab", app)
-        self.assertEqual(1, app.count('text="NAVIGATION"'))
+        self.assertEqual(0, app.count('text="NAVIGATION"'))
         self.assertNotIn("Grid & Distance", tools)
         self.assertNotIn('tabs.add("Smart Devices")', tools)
         self.assertNotIn("def _devices", tools)

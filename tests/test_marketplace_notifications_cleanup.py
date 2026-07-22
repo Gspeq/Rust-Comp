@@ -133,7 +133,7 @@ class MarketplaceUiCleanupTests(unittest.TestCase):
         self.assertNotIn("ToolsTab", app)
         self.assertNotIn('"Utilities":', app)
         self.assertEqual(
-            1,
+            0,
             app.count('text="NAVIGATION"'),
         )
 
@@ -170,7 +170,7 @@ class MarketplaceUiCleanupTests(unittest.TestCase):
             / "shops_enhanced.py"
         ).read_text(encoding="utf-8")
         self.assertIn(
-            'text="Deal rating"',
+            '"deal": "Deal rating"',
             shop,
         )
         self.assertIn(

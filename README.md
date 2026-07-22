@@ -133,3 +133,22 @@ and possible listing-error offers produce a non-modal alert with an Open Shops
 action. Notification behavior is configured from the Dashboard and shared by
 source and packaged EXE launches. Repeated unchanged listings are suppressed
 for the configured interval.
+
+## Contextual guide, compact marketplace, and fullscreen alerts
+
+<!-- CONTEXT_GUIDE_COMPACT_SHOPS_070 -->
+
+The small `? Guide` button remains visible on every application tab and opens
+the section for the page currently being viewed. The in-app catalog and
+`docs/FEATURE_GUIDE.md` are generated from the same source and must be updated
+whenever a tab or feature changes.
+
+Marketplace blueprint offers are always visible and marked with a `BP:` prefix;
+the separate Blueprint mode filter has been removed. The results table omits
+redundant coordinate/type columns and uses compact responsive columns so normal
+listings fit without horizontal scrolling.
+
+Marketplace alerts use both the existing non-modal in-app card and a native
+Windows notification-area message. The Windows path is intended to remain
+visible while Rust is fullscreen and to place the alert in Windows Notification
+Center, subject to the user's Windows notification and Do Not Disturb settings.

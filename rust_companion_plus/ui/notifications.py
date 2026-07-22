@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import os
+import subprocess
 from collections.abc import Callable, Sequence
 from typing import Any
 
@@ -12,8 +14,78 @@ from rust_companion_plus.services.deal_notifications import (
 from rust_companion_plus.ui.common import ACCENT, MUTED
 
 
+CREATE_NO_WINDOW = 0x08000000
+
+
+def _powershell_literal(value: str, limit: int) -> str:
+    cleaned = " ".join(str(value or "").replace("\x00", "").split())
+    return cleaned[:limit].replace("'", "''")
+
+
+def show_windows_notification(
+    alerts: Sequence[DealAlert],
+    *,
+    seconds: int,
+    sound: bool,
+) -> bool:
+    """Send a native Windows notification that can surface over fullscreen apps."""
+    if os.name != "nt" or not alerts:
+        return False
+
+    top = alerts[0]
+    extra = len(alerts) - 1
+    title = _powershell_literal(top.title, 63)
+    body = top.message
+    if extra:
+        body += f" Plus {extra} more new alert-worthy listing(s)."
+    body = _powershell_literal(body, 255)
+    duration_ms = max(5, min(60, int(seconds))) * 1000
+    icon = "Warning" if top.severity >= 3 else "Info"
+
+    # System.Windows.Forms.NotifyIcon routes through the Windows notification
+    # area. Unlike a Tk window, it remains useful while Rust is fullscreen and
+    # also leaves a record in Windows Notification Center when Windows permits.
+    script = f"""
+Add-Type -AssemblyName System.Windows.Forms
+Add-Type -AssemblyName System.Drawing
+$notify = New-Object System.Windows.Forms.NotifyIcon
+$notify.Icon = [System.Drawing.SystemIcons]::{icon}
+$notify.BalloonTipTitle = '{title}'
+$notify.BalloonTipText = '{body}'
+$notify.BalloonTipIcon = [System.Windows.Forms.ToolTipIcon]::{icon}
+$notify.Visible = $true
+$notify.ShowBalloonTip({duration_ms})
+Start-Sleep -Milliseconds {duration_ms + 1200}
+$notify.Dispose()
+"""
+    try:
+        subprocess.Popen(
+            [
+                "powershell.exe",
+                "-NoProfile",
+                "-NonInteractive",
+                "-WindowStyle",
+                "Hidden",
+                "-Command",
+                script,
+            ],
+            stdin=subprocess.DEVNULL,
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=CREATE_NO_WINDOW,
+        )
+    except (OSError, ValueError):
+        return False
+
+    # NotifyIcon controls its own sound. A separate app bell is only needed for
+    # the in-app fallback, so this argument is intentionally retained for API
+    # clarity and future native-sound controls.
+    _ = sound
+    return True
+
+
 class DealNotificationCenter:
-    """Non-modal marketplace alerts shared by source and EXE launches."""
+    """Native Windows plus non-modal in-app marketplace notifications."""
 
     def __init__(self, owner: ctk.CTk) -> None:
         self.owner = owner
@@ -31,6 +103,12 @@ class DealNotificationCenter:
         configured = normalize_notification_settings(settings)
         if not alerts or (not configured["enabled"] and not force):
             return
+
+        native_sent = show_windows_notification(
+            alerts,
+            seconds=configured["popup_seconds"],
+            sound=configured["sound"],
+        )
         self.dismiss()
 
         top = alerts[0]
@@ -65,6 +143,8 @@ class DealNotificationCenter:
         summary = top.message
         if extra:
             summary += f"\n\nPlus {extra} more new alert-worthy listing(s)."
+        if native_sent:
+            summary += "\n\nAlso sent to Windows Notification Center."
         ctk.CTkLabel(
             card,
             text=summary,
@@ -109,7 +189,7 @@ class DealNotificationCenter:
         y = max(0, self.owner.winfo_rooty() + 48)
         window.geometry(f"{width}x{height}+{x}+{y}")
 
-        if configured["sound"]:
+        if configured["sound"] and not native_sent:
             try:
                 self.owner.bell()
             except Exception:

@@ -5,6 +5,7 @@ from datetime import datetime
 from typing import Any
 
 import customtkinter as ctk
+from tkinter import ttk
 
 from rust_companion_plus.services.deal_notifications import (
     DEAL_ALERT_SEEN_KEY,
@@ -22,7 +23,6 @@ from rust_companion_plus.ui.common import (
     run_in_worker,
 )
 from rust_companion_plus.ui.tabs.shops import (
-    BLUEPRINT_MODES,
     ShopFilters,
     ShopsTab as BaseShopsTab,
     collect_shop_rows,
@@ -38,6 +38,27 @@ VALUE_SORT_MODES = (
     "Highest stock",
 )
 VALUE_HISTORY_KEY = "shop_value_history"
+COMPACT_COLUMNS = (
+    "shop",
+    "grid",
+    "sells",
+    "quantity",
+    "wants",
+    "cost",
+    "stock",
+    "deal",
+)
+COMPACT_COLUMN_WIDTHS = {
+    "shop": 150,
+    "grid": 54,
+    "sells": 170,
+    "quantity": 54,
+    "wants": 150,
+    "cost": 58,
+    "stock": 58,
+    "deal": 155,
+}
+
 
 
 class ShopsTab(BaseShopsTab):
@@ -136,76 +157,38 @@ class ShopsTab(BaseShopsTab):
             pady=10,
         )
 
-        advanced = tabs.tab("Advanced")
-        advanced.grid_columnconfigure(
-            (1, 2),
-            weight=1,
-        )
-        ctk.CTkLabel(
-            advanced,
-            text="Blueprint mode",
-            text_color=MUTED,
-        ).grid(
-            row=0,
-            column=0,
-            padx=(12, 6),
-            pady=10,
-        )
-        self.blueprint_mode = (
-            ctk.CTkOptionMenu(
-                advanced,
-                values=list(
-                    BLUEPRINT_MODES
-                ),
-                width=160,
-                command=lambda _value: (
-                    self.refresh()
-                ),
-            )
-        )
-        self.blueprint_mode.set(
-            "Any offer"
-        )
-        self.blueprint_mode.grid(
-            row=0,
-            column=1,
-            sticky="ew",
-            padx=5,
-            pady=10,
-        )
+        # Blueprint offers remain visible and are marked with a clear BP prefix.
+        # A hidden StringVar keeps the base filter contract on "Any offer"
+        # without exposing a separate BP filter control to the user.
+        self.blueprint_mode = ctk.StringVar(value="Any offer")
 
+        advanced = tabs.tab("Advanced")
+        advanced.grid_columnconfigure((0, 1), weight=1)
         self.min_stock = ctk.CTkEntry(
             advanced,
-            placeholder_text=(
-                "Minimum stock"
-            ),
+            placeholder_text="Minimum stock",
             height=36,
         )
         self.max_cost = ctk.CTkEntry(
             advanced,
-            placeholder_text=(
-                "Maximum total cost"
-            ),
+            placeholder_text="Maximum total cost",
             height=36,
         )
         self.min_stock.grid(
             row=0,
-            column=2,
+            column=0,
             sticky="ew",
-            padx=5,
+            padx=(12, 5),
             pady=10,
         )
         self.max_cost.grid(
             row=0,
-            column=3,
+            column=1,
             sticky="ew",
             padx=(5, 12),
             pady=10,
         )
-        for entry in (
-            self.min_stock,
-            self.max_cost,
-        ):
+        for entry in (self.min_stock, self.max_cost):
             entry.bind(
                 "<KeyRelease>",
                 lambda _event: self.refresh(),
@@ -213,40 +196,44 @@ class ShopsTab(BaseShopsTab):
 
     def _build_results_table(self) -> None:
         super()._build_results_table()
-        columns = (
-            "shop",
-            "grid",
-            "coordinates",
-            "sells",
-            "quantity",
-            "wants",
-            "cost",
-            "stock",
-            "type",
-            "deal",
-        )
-        self.tree.configure(
-            columns=columns
-        )
-        self.tree.heading(
-            "deal",
-            text="Deal rating",
-        )
-        self.tree.column(
-            "deal",
-            width=170,
-            minwidth=130,
-            anchor="center",
-            stretch=False,
-        )
+        self.tree.configure(columns=COMPACT_COLUMNS)
+        headings = {
+            "shop": "Shop",
+            "grid": "Grid",
+            "sells": "Sells",
+            "quantity": "Qty",
+            "wants": "Wants",
+            "cost": "Cost",
+            "stock": "Stock",
+            "deal": "Deal rating",
+        }
+        for name, heading in headings.items():
+            self.tree.heading(name, text=heading)
+            self.tree.column(
+                name,
+                width=COMPACT_COLUMN_WIDTHS[name],
+                minwidth=max(42, COMPACT_COLUMN_WIDTHS[name] // 2),
+                anchor="w" if name in {"shop", "sells", "wants", "deal"} else "center",
+                stretch=name in {"shop", "sells", "wants", "deal"},
+            )
+        self._hide_horizontal_scrollbars(self)
         self.table_note.configure(
             text=(
-                "Best value uses unit price, "
-                "live peers, rolling history, "
-                "stock, rank, confidence, and "
-                "robust outlier detection"
+                "BP listings are marked directly. Best value uses unit price, "
+                "live peers, history, stock, rank, confidence, and outlier detection."
             )
         )
+
+    def _hide_horizontal_scrollbars(self, widget: Any) -> None:
+        for child in widget.winfo_children():
+            if isinstance(child, ttk.Scrollbar):
+                try:
+                    if str(child.cget("orient")) == "horizontal":
+                        child.grid_remove()
+                        continue
+                except Exception:
+                    pass
+            self._hide_horizontal_scrollbars(child)
 
     def clear_filters(self) -> None:
         for entry in (
@@ -512,8 +499,22 @@ class ShopsTab(BaseShopsTab):
                 "",
                 "end",
                 values=(
-                    row.values()
-                    + (item.deal.label,)
+                    row.shop,
+                    row.grid,
+                    (
+                        f"BP: {row.item_name}"
+                        if row.item_is_blueprint
+                        else row.item_name
+                    ),
+                    row.quantity,
+                    (
+                        f"BP: {row.currency_name}"
+                        if row.currency_is_blueprint
+                        else row.currency_name
+                    ),
+                    row.cost,
+                    row.stock,
+                    item.deal.label,
                 ),
                 tags=(tag,),
             )
@@ -589,7 +590,7 @@ class ShopsTab(BaseShopsTab):
                 f"{len(rows)} offer(s) · "
                 f"{shop_count} shop(s) · "
                 "ratings compare only identical "
-                "item, payment, and blueprint markets"
+                "item and payment markets; BP status is compared separately"
             )
         )
 
@@ -620,9 +621,9 @@ class ShopsTab(BaseShopsTab):
         self.selection_detail.configure(
             text=(
                 f"{row.quantity} × "
-                f"{row.item_name} for "
+                f"{'BP: ' if row.item_is_blueprint else ''}{row.item_name} for "
                 f"{row.cost} × "
-                f"{row.currency_name} · "
+                f"{'BP: ' if row.currency_is_blueprint else ''}{row.currency_name} · "
                 f"{deal.label} · "
                 f"{deal.reason}"
             )
