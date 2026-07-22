@@ -1,44 +1,54 @@
-
 param()
 
 Set-StrictMode -Version Latest
 $ErrorActionPreference = "Stop"
 
-function Fail([string]$Message) {
-    Write-Host ""
-    Write-Host "ERROR: $Message" -ForegroundColor Red
-    Read-Host "Press Enter to close"
-    exit 1
+function Invoke-Checked {
+    param(
+        [Parameter(Mandatory = $true)][string]$FilePath,
+        [Parameter(Mandatory = $true)][string[]]$Arguments
+    )
+
+    & $FilePath @Arguments
+    $ExitCode = $LASTEXITCODE
+    if ($ExitCode -ne 0) {
+        throw "Command failed with exit code ${ExitCode}: $FilePath $($Arguments -join ' ')"
+    }
 }
 
 $Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
-Set-Location $Repo
+Set-Location -LiteralPath $Repo
 
 $Branch = (& git branch --show-current).Trim()
 if ($Branch -ne "test-live-sync") {
-    Fail "Source testing is restricted to test-live-sync. Current branch: $Branch"
+    throw "Source runs are restricted to test-live-sync. Current branch: $Branch"
 }
 
 $Python = Join-Path $Repo ".venv\Scripts\python.exe"
-if (-not (Test-Path $Python)) {
-    Fail "Missing project Python environment: $Python"
+if (-not (Test-Path -LiteralPath $Python)) {
+    $PyLauncher = Get-Command py -ErrorAction SilentlyContinue
+    if ($null -ne $PyLauncher) {
+        Invoke-Checked -FilePath $PyLauncher.Source -Arguments @("-3", "-m", "venv", ".venv")
+    }
+    else {
+        $PythonCommand = Get-Command python -ErrorAction SilentlyContinue
+        if ($null -eq $PythonCommand) {
+            throw "Python 3 was not found."
+        }
+        Invoke-Checked -FilePath $PythonCommand.Source -Arguments @("-m", "venv", ".venv")
+    }
 }
 
+$env:PIP_NO_CACHE_DIR = "1"
+$env:PIP_DISABLE_PIP_VERSION_CHECK = "1"
 $env:RUST_COMPANION_HIDE_CONSOLE_AFTER_GUI = "1"
 $env:PYTHONUNBUFFERED = "1"
 
-Write-Host ""
-Write-Host "Rust Companion+ source test" -ForegroundColor Cyan
-Write-Host "No EXE or installer will be built."
-Write-Host ""
+Write-Host "Preparing Rust Companion+ source dependencies..." -ForegroundColor Cyan
+Invoke-Checked -FilePath $Python -Arguments @(
+    "-m", "pip", "install", "--no-cache-dir", "-r", "requirements.txt"
+)
 
+Write-Host "Starting Rust Companion+ from source..." -ForegroundColor Green
 & $Python (Join-Path $Repo "main.py")
-$ExitCode = $LASTEXITCODE
-
-if ($ExitCode -ne 0) {
-    Write-Host ""
-    Write-Host "Rust Companion+ exited with code $ExitCode." -ForegroundColor Red
-    Read-Host "Press Enter to close"
-}
-
-exit $ExitCode
+exit $LASTEXITCODE

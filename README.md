@@ -6,7 +6,7 @@ Rust Companion+ is a desktop information and planning companion for the PC versi
 
 ## Final launch behavior
 
-`run_windows.bat`, `launcher.py`, `main.py`, and the compiled EXE all follow the same sequence:
+`Run_Rust_Companion_Plus_Source.bat`, `launcher.py`, `main.py`, and the compiled EXE all follow the same sequence:
 
 1. Load global BattleMetrics and RustMaps keys from the persistent AppData vault.
 2. Wait until `RustClient.exe` is actually running.
@@ -50,7 +50,7 @@ The save file deliberately remains outside the EXE so upgrades do not erase it.
 Double-click:
 
 ```text
-run_windows.bat
+Run_Rust_Companion_Plus_Source.bat
 ```
 
 The script creates `.venv`, installs required packages, and starts the gated launcher.
@@ -82,7 +82,7 @@ The launcher validates the completed profile before opening the GUI.
 Run:
 
 ```text
-build_windows_exe.bat
+Build_Rust_Companion_Plus.bat
 ```
 
 The build script:
