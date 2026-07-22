@@ -18,7 +18,7 @@ function Fail([string]$Text) {
     exit 1
 }
 
-$Repo = Split-Path -Parent $MyInvocation.MyCommand.Path
+$Repo = (Resolve-Path (Join-Path $PSScriptRoot "..\..")).Path
 Set-Location $Repo
 
 if ($env:OS -ne "Windows_NT") {
@@ -129,7 +129,7 @@ if ($LASTEXITCODE -ne 0) {
 }
 & $ReleasePython -m pip install `
     --requirement (Join-Path $Repo "requirements.txt") `
-    --requirement (Join-Path $Repo "requirements-build.txt")
+    --requirement (Join-Path $Repo "requirements\build.txt")
 if ($LASTEXITCODE -ne 0) {
     Fail "Release dependencies failed to install."
 }
@@ -181,7 +181,7 @@ $TrackedSourceRoots = @(
     (Join-Path $Repo "rust_companion_plus"),
     (Join-Path $Repo "main.py"),
     (Join-Path $Repo "requirements.txt"),
-    (Join-Path $Repo "requirements-build.txt"),
+    (Join-Path $Repo "requirements\build.txt"),
     (Join-Path $Repo "packaging")
 )
 $ManifestFiles = @()

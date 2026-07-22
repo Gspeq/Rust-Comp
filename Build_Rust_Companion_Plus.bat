@@ -3,11 +3,13 @@ setlocal EnableExtensions
 cd /d "%~dp0"
 title Rust Companion+ - Manual EXE Build
 color 0E
-echo This is the only user-facing EXE build launcher.
-echo It runs only when you double-click this file.
+
+echo This is the only EXE build launcher.
+echo Source runs never build an EXE.
 echo.
-powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0build_windows_release.ps1"
+powershell.exe -NoProfile -ExecutionPolicy Bypass -File "%~dp0tools\windows\build_windows_release.ps1"
 set "EXIT_CODE=%ERRORLEVEL%"
+
 echo.
 if "%EXIT_CODE%"=="0" (
     echo Manual EXE build completed.

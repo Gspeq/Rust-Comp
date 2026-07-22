@@ -26,7 +26,7 @@ or install anything.
 Double-click:
 
 ```text
-Test_Rust_Companion_Plus.bat
+Run_Rust_Companion_Plus_Source.bat (tests run first)
 ```
 
 This runs the complete Python test suite and `git diff --check`. It does not
@@ -45,7 +45,7 @@ It:
 
 1. Creates an isolated `.release-venv`.
 2. Installs runtime dependencies from `requirements.txt`.
-3. Installs PyInstaller from `requirements-build.txt`.
+3. Installs PyInstaller from `requirements/build.txt`.
 4. Runs the complete test suite unless explicitly skipped.
 5. Builds `RustCompanionPlus.exe` with an embedded Python runtime.
 6. Runs the packaged executable self-test.

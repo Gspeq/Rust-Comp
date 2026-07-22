@@ -43,13 +43,13 @@ class WindowsReleaseContractTests(unittest.TestCase):
     def test_release_files_exist(self) -> None:
         root = Path(__file__).resolve().parents[1]
         required = (
-            "build_windows_release.ps1",
+            "tools/windows/build_windows_release.ps1",
             "Build_Rust_Companion_Plus.bat",
-            "requirements-build.txt",
+            "requirements/build.txt",
             "packaging/RustCompanionPlus.spec",
             "packaging/RustCompanionPlus.iss",
             "packaging/generate_windows_assets.py",
-            "WINDOWS_RELEASE.md",
+            "docs/WINDOWS_RELEASE.md",
         )
         for relative in required:
             self.assertTrue(
@@ -96,7 +96,7 @@ class WindowsReleaseContractTests(unittest.TestCase):
     def test_builder_uses_local_source_not_a_clone(self) -> None:
         root = Path(__file__).resolve().parents[1]
         builder = (
-            root / "build_windows_release.ps1"
+            root / "tools" / "windows" / "build_windows_release.ps1"
         ).read_text(encoding="utf-8")
         self.assertNotIn("git clone", builder.casefold())
         self.assertIn("requirements.txt", builder)
@@ -154,7 +154,7 @@ class WindowsReleaseContractTests(unittest.TestCase):
     def test_builder_preflights_resolved_entrypoint(self) -> None:
         root = Path(__file__).resolve().parents[1]
         builder = (
-            root / "build_windows_release.ps1"
+            root / "tools" / "windows" / "build_windows_release.ps1"
         ).read_text(encoding="utf-8")
         self.assertIn(
             '$Entrypoint = Join-Path $Repo "main.py"',
@@ -207,28 +207,20 @@ class WindowsReleaseContractTests(unittest.TestCase):
         ).read_text(encoding="utf-8")
         self.assertIn('"Rust+ reconnecting"', app)
         self.assertIn("first_new_error", app)
-    def test_source_runner_never_builds_release(self) -> None:
+    def test_source_runner_tests_before_launch(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        runner = (root / "run_source.ps1").read_text(
-            encoding="utf-8"
-        )
+        runner = (
+            root / "tools" / "windows" / "run_source.ps1"
+        ).read_text(encoding="utf-8")
         lowered = runner.casefold()
-        self.assertIn(
-            "rust_companion_hide_console_after_gui",
-            lowered,
-        )
-        self.assertNotIn("pyinstaller", lowered)
-        self.assertNotIn("inno setup", lowered)
-        self.assertNotIn("build_windows_release", lowered)
-
-    def test_test_runner_never_builds_release(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        runner = (root / "test_source.ps1").read_text(
-            encoding="utf-8"
-        )
-        lowered = runner.casefold()
+        self.assertIn("rust_companion_hide_console_after_gui", lowered)
         self.assertIn("unittest discover", lowered)
         self.assertIn("git diff --check", lowered)
+        self.assertLess(
+            lowered.index('"unittest", "discover"'),
+            lowered.index('(join-path $repo "main.py")'),
+        )
+        self.assertNotIn("pyinstaller", lowered)
         self.assertNotIn("build_windows_release", lowered)
 
     def test_release_builder_remains_manual(self) -> None:
@@ -236,26 +228,18 @@ class WindowsReleaseContractTests(unittest.TestCase):
         source_launcher = (
             root / "Run_Rust_Companion_Plus_Source.bat"
         ).read_text(encoding="utf-8")
-        test_launcher = (
-            root / "Test_Rust_Companion_Plus.bat"
-        ).read_text(encoding="utf-8")
         build_launcher = (
             root / "Build_Rust_Companion_Plus.bat"
         ).read_text(encoding="utf-8")
 
-        self.assertIn("run_source.ps1", source_launcher)
-        self.assertIn("test_source.ps1", test_launcher)
+        self.assertIn("tools\\windows\\run_source.ps1", source_launcher)
         self.assertIn(
-            "build_windows_release.ps1",
+            "tools\\windows\\build_windows_release.ps1",
             build_launcher,
         )
-        self.assertNotIn(
-            "build_windows_release.ps1",
-            source_launcher,
-        )
-        self.assertNotIn(
-            "build_windows_release.ps1",
-            test_launcher,
+        self.assertNotIn("build_windows_release", source_launcher)
+        self.assertFalse(
+            (root / "Test_Rust_Companion_Plus.bat").exists()
         )
     def test_exact_map_parser_is_declared_and_bundled(self) -> None:
         root = Path(__file__).resolve().parents[1]

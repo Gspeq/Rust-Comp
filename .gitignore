@@ -5,7 +5,6 @@ venv/
 dist/
 build/
 *.spec
-!RustCompanionPlus.spec
 
 *.bak
 debug_bundles/
