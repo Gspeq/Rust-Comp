@@ -120,3 +120,16 @@ python -m unittest discover -s tests -v
 - Smart Devices is a standalone Rust+ hub with saved entities, batch reads, batch controls, favorites, zones, and protection/capacity details.
 - Electrical opens with a simple natural-language planner while preserving the full visual circuit analyzer under Advanced Circuit.
 - Utilities is intentionally limited to recycler calculations; map routing and smart devices live in their dedicated hubs.
+
+## Marketplace alerts and simplified navigation
+
+<!-- MARKETPLACE_ALERTS_061 -->
+
+The Utilities page is temporarily hidden. Marketplace rows use neutral styling
+and plain-text ratings calculated from normalized unit price, comparable live
+offers, rolling server-specific history, stock, peer rank, confidence, and
+robust outlier detection. While the application is open, new STEAL, CAN'T MISS,
+and possible listing-error offers produce a non-modal alert with an Open Shops
+action. Notification behavior is configured from the Dashboard and shared by
+source and packaged EXE launches. Repeated unchanged listings are suppressed
+for the configured interval.

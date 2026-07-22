@@ -6,6 +6,14 @@ import customtkinter as ctk
 
 from rust_companion_plus.models import RustCredentials
 from rust_companion_plus.services.server_finder import RustServerFinder
+from rust_companion_plus.services.deal_notifications import (
+    MINIMUM_RATING_OPTIONS,
+    NOTIFICATION_SETTINGS_KEY,
+    DealAlert,
+    clear_deal_alert_history,
+    normalize_notification_settings,
+    save_notification_settings as persist_notification_settings,
+)
 from rust_companion_plus.ui.common import MetricCard, SectionCard, run_in_worker, safe_int
 
 
@@ -122,7 +130,238 @@ class DashboardTab(ctk.CTkScrollableFrame):
         )
         self.events_box.grid(row=live.content_row, column=0, sticky="ew", padx=14, pady=(0, 14))
         self.events_box.configure(state="disabled")
+
+        notification_settings = normalize_notification_settings(
+            context.store.get(
+                NOTIFICATION_SETTINGS_KEY,
+                {},
+            )
+        )
+        notifications = SectionCard(
+            self,
+            "Marketplace Notifications",
+            (
+                "Configure non-modal alerts for unusually strong vending "
+                "offers and possible listing mistakes. These settings are "
+                "shared by source and packaged EXE launches."
+            ),
+        )
+        notifications.grid(
+            row=5,
+            column=0,
+            columnspan=4,
+            sticky="ew",
+            pady=8,
+        )
+        notification_form = ctk.CTkFrame(
+            notifications,
+            fg_color="transparent",
+        )
+        notification_form.grid(
+            row=notifications.content_row,
+            column=0,
+            sticky="ew",
+            padx=14,
+            pady=(0, 14),
+        )
+        notification_form.grid_columnconfigure((0, 1, 2, 3), weight=1)
+
+        self.notification_enabled = ctk.BooleanVar(
+            value=notification_settings["enabled"]
+        )
+        self.notification_sound = ctk.BooleanVar(
+            value=notification_settings["sound"]
+        )
+        self.notification_minimum = ctk.StringVar(
+            value=notification_settings["minimum_rating"]
+        )
+        self.notification_seconds = ctk.StringVar(
+            value=str(notification_settings["popup_seconds"])
+        )
+        self.notification_repeat = ctk.StringVar(
+            value=str(notification_settings["repeat_hours"])
+        )
+        self.notification_max = ctk.StringVar(
+            value=str(notification_settings["max_alerts"])
+        )
+
+        ctk.CTkSwitch(
+            notification_form,
+            text="Enable marketplace alerts",
+            variable=self.notification_enabled,
+        ).grid(row=0, column=0, sticky="w", padx=4, pady=5)
+        ctk.CTkSwitch(
+            notification_form,
+            text="Play notification sound",
+            variable=self.notification_sound,
+        ).grid(row=0, column=1, sticky="w", padx=4, pady=5)
+        ctk.CTkOptionMenu(
+            notification_form,
+            values=list(MINIMUM_RATING_OPTIONS),
+            variable=self.notification_minimum,
+        ).grid(row=0, column=2, sticky="ew", padx=4, pady=5)
+        ctk.CTkLabel(
+            notification_form,
+            text="Minimum alert rating",
+            anchor="w",
+        ).grid(row=0, column=3, sticky="w", padx=4, pady=5)
+
+        ctk.CTkOptionMenu(
+            notification_form,
+            values=["5", "10", "15", "30", "60"],
+            variable=self.notification_seconds,
+        ).grid(row=1, column=0, sticky="ew", padx=4, pady=5)
+        ctk.CTkLabel(
+            notification_form,
+            text="Popup seconds",
+            anchor="w",
+        ).grid(row=1, column=1, sticky="w", padx=4, pady=5)
+        ctk.CTkOptionMenu(
+            notification_form,
+            values=["1", "6", "24", "72", "168", "720"],
+            variable=self.notification_repeat,
+        ).grid(row=1, column=2, sticky="ew", padx=4, pady=5)
+        ctk.CTkLabel(
+            notification_form,
+            text="Suppress repeats for hours",
+            anchor="w",
+        ).grid(row=1, column=3, sticky="w", padx=4, pady=5)
+
+        ctk.CTkOptionMenu(
+            notification_form,
+            values=["1", "3", "5", "10"],
+            variable=self.notification_max,
+        ).grid(row=2, column=0, sticky="ew", padx=4, pady=5)
+        ctk.CTkLabel(
+            notification_form,
+            text="Maximum alerts per scan",
+            anchor="w",
+        ).grid(row=2, column=1, sticky="w", padx=4, pady=5)
+        ctk.CTkButton(
+            notification_form,
+            text="Save notification settings",
+            command=self.save_marketplace_notification_settings,
+        ).grid(row=3, column=0, sticky="ew", padx=4, pady=(9, 4))
+        ctk.CTkButton(
+            notification_form,
+            text="Test notification",
+            fg_color="transparent",
+            border_width=1,
+            command=self.test_marketplace_notification,
+        ).grid(row=3, column=1, sticky="ew", padx=4, pady=(9, 4))
+        ctk.CTkButton(
+            notification_form,
+            text="Clear alert history",
+            fg_color="transparent",
+            border_width=1,
+            command=self.clear_marketplace_notification_history,
+        ).grid(row=3, column=2, sticky="ew", padx=4, pady=(9, 4))
+        self.notification_status = ctk.CTkLabel(
+            notification_form,
+            text=(
+                "Alerts are evaluated whenever live marketplace data changes."
+            ),
+            anchor="w",
+            justify="left",
+        )
+        self.notification_status.grid(
+            row=3,
+            column=3,
+            sticky="ew",
+            padx=4,
+            pady=(9, 4),
+        )
+
         self.refresh()
+
+    def _notification_settings_from_controls(self) -> dict:
+        return {
+            "enabled": bool(self.notification_enabled.get()),
+            "minimum_rating": self.notification_minimum.get(),
+            "sound": bool(self.notification_sound.get()),
+            "popup_seconds": safe_int(
+                self.notification_seconds.get(),
+                15,
+            ),
+            "repeat_hours": safe_int(
+                self.notification_repeat.get(),
+                72,
+            ),
+            "max_alerts": safe_int(
+                self.notification_max.get(),
+                3,
+            ),
+        }
+
+    def save_marketplace_notification_settings(
+        self,
+        *,
+        show_confirmation: bool = True,
+    ) -> dict:
+        settings = persist_notification_settings(
+            self.context.store,
+            self._notification_settings_from_controls(),
+        )
+        self.notification_status.configure(
+            text=(
+                "Saved: "
+                f"{settings['minimum_rating']}; "
+                f"{settings['popup_seconds']}s popup; "
+                f"{settings['repeat_hours']}h repeat suppression."
+            )
+        )
+        if show_confirmation:
+            messagebox.showinfo(
+                "Marketplace notifications",
+                "Notification settings were saved.",
+            )
+        return settings
+
+    def test_marketplace_notification(self) -> None:
+        self.save_marketplace_notification_settings(
+            show_confirmation=False
+        )
+        app = getattr(self.context, "app", None)
+        publish = getattr(app, "publish_deal_alerts", None)
+        if not callable(publish):
+            messagebox.showerror(
+                "Marketplace notifications",
+                "The notification center is unavailable.",
+            )
+            return
+        publish(
+            [
+                DealAlert(
+                    fingerprint="dashboard-test",
+                    severity=1,
+                    title="Test marketplace notification",
+                    message=(
+                        "This is how a strong vending deal alert will appear. "
+                        "Open Shops jumps directly to the marketplace."
+                    ),
+                    label="TEST",
+                    score=100,
+                    grid="A1",
+                    shop="Test Vending Machine",
+                    item_name="Test Item",
+                )
+            ],
+            force=True,
+        )
+
+    def clear_marketplace_notification_history(self) -> None:
+        clear_deal_alert_history(self.context.store)
+        self.notification_status.configure(
+            text=(
+                "Alert history cleared. Current qualifying listings may "
+                "notify again on the next marketplace scan."
+            )
+        )
+        messagebox.showinfo(
+            "Marketplace notifications",
+            "Saved marketplace alert history was cleared.",
+        )
+
 
     def save_credentials(self, *, show_confirmation: bool = True) -> None:
         credentials = RustCredentials(

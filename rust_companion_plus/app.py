@@ -28,7 +28,12 @@ from rust_companion_plus.ui.tabs.profiles import SavedServersTab
 from rust_companion_plus.ui.tabs.smart_devices import SmartDevicesTab
 from rust_companion_plus.ui.tabs.shops_enhanced import ShopsTab
 from rust_companion_plus.ui.tabs.team import TeamTab
-from rust_companion_plus.ui.tabs.tools import ToolsTab
+from rust_companion_plus.services.deal_notifications import (
+    DealAlert,
+    NOTIFICATION_SETTINGS_KEY,
+    normalize_notification_settings,
+)
+from rust_companion_plus.ui.notifications import DealNotificationCenter
 # FEATURE_HUBS_RETENTION_V1
 
 
@@ -698,6 +703,7 @@ class RustCompanionApp(ctk.CTk):
         self._last_battlemetrics_refresh = 0.0
         self._last_rustplus_error = ""
         self._last_rustplus_error_at = 0.0
+        self.deal_notifications = DealNotificationCenter(self)
 
         self.grid_columnconfigure(1, weight=1)
         self.grid_rowconfigure(0, weight=1)
@@ -808,32 +814,12 @@ class RustCompanionApp(ctk.CTk):
                 self.content,
                 self.context,
             ),
-            "Utilities": ToolsTab(
-                self.content,
-                self.context,
-            ),
             "Notes": NotesTab(
                 self.content,
                 self.context,
             ),
         }
 
-        ctk.CTkLabel(
-            self.sidebar,
-            text="NAVIGATION",
-            text_color=("#64748b", "#64748b"),
-            font=ctk.CTkFont(
-                size=10,
-                weight="bold",
-            ),
-            anchor="w",
-        ).pack(
-            fill="x",
-            padx=22,
-            pady=(4, 6),
-        )
-
-        self.nav_buttons: dict[str, ctk.CTkButton] = {}
         ctk.CTkLabel(
             self.sidebar,
             text="NAVIGATION",
@@ -1004,6 +990,26 @@ class RustCompanionApp(ctk.CTk):
             if callable(callback):
                 callback()
 
+
+
+    def publish_deal_alerts(
+        self,
+        alerts: list[DealAlert],
+        *,
+        force: bool = False,
+    ) -> None:
+        settings = normalize_notification_settings(
+            self.context.store.get(
+                NOTIFICATION_SETTINGS_KEY,
+                {},
+            )
+        )
+        self.deal_notifications.publish(
+            alerts,
+            settings=settings,
+            on_open_shops=lambda: self.show_tab("Shops"),
+            force=force,
+        )
 
 
     def _save_current_profile(self) -> dict[str, Any]:
@@ -1263,9 +1269,6 @@ class RustCompanionApp(ctk.CTk):
             self.context.rustplus_live = False
             message = str(exc).strip() or "Unknown Rust+ failure"
             now = time.monotonic()
-            first_new_error = (
-                message != self._last_rustplus_error
-            )
             if (
                 message != self._last_rustplus_error
                 or now - self._last_rustplus_error_at >= 30.0
@@ -1280,17 +1283,6 @@ class RustCompanionApp(ctk.CTk):
                 )
                 self._last_rustplus_error = message
                 self._last_rustplus_error_at = now
-            if first_new_error:
-                messagebox.showwarning(
-                    "Rust+ reconnecting",
-                    (
-                        "The GUI opened, but live Rust+ failed:\n\n"
-                        f"{message[:300]}\n\n"
-                        "Cached information remains available. "
-                        "The app will keep retrying automatically."
-                    ),
-                    parent=self,
-                )
             self.connection_badge.configure(
                 text="● Rust+ Reconnecting",
                 text_color=("#92400e", "#fbbf24"),

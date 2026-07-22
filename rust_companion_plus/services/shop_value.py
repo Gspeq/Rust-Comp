@@ -2,13 +2,14 @@ from __future__ import annotations
 
 import hashlib
 import json
+import math
 import statistics
 from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 
-HISTORY_VERSION = 1
-MAX_HISTORY_SAMPLES = 96
+HISTORY_VERSION = 2
+MAX_HISTORY_SAMPLES = 120
 
 
 @dataclass(frozen=True, slots=True)
@@ -19,6 +20,12 @@ class DealScore:
     benchmark: float
     discount_fraction: float
     confidence: str
+    peer_count: int = 0
+    history_count: int = 0
+    peer_rank: int = 0
+    anomaly_score: float = 0.0
+    reason: str = ""
+    alert_level: str = ""
 
     @property
     def discount_percent(self) -> int:
@@ -53,7 +60,11 @@ def _snapshot_signature(groups: dict[str, list[float]]) -> str:
         (key, [round(value, 6) for value in sorted(values)])
         for key, values in sorted(groups.items())
     ]
-    encoded = json.dumps(payload, separators=(",", ":"), sort_keys=True).encode("utf-8")
+    encoded = json.dumps(
+        payload,
+        separators=(",", ":"),
+        sort_keys=True,
+    ).encode("utf-8")
     return hashlib.sha256(encoded).hexdigest()
 
 
@@ -72,7 +83,7 @@ def _normalize_history(raw: Any) -> dict[str, Any]:
                     number = float(value)
                 except (TypeError, ValueError):
                     continue
-                if number >= 0:
+                if math.isfinite(number) and number >= 0:
                     cleaned.append(number)
             if cleaned:
                 prices[str(key)] = cleaned
@@ -83,94 +94,320 @@ def _normalize_history(raw: Any) -> dict[str, Any]:
     }
 
 
+def _median_absolute_deviation(
+    values: Sequence[float],
+    median: float,
+) -> float:
+    if not values:
+        return 0.0
+    return float(
+        statistics.median(
+            abs(value - median)
+            for value in values
+        )
+    )
+
+
+def _confidence(peer_count: int, history_count: int) -> str:
+    if (
+        peer_count >= 4
+        or history_count >= 5
+        or (peer_count >= 3 and history_count >= 2)
+    ):
+        return "High"
+    if peer_count >= 2 or history_count >= 1:
+        return "Medium"
+    return "Low"
+
+
+def _benchmark(
+    live_peers: Sequence[float],
+    historical: Sequence[float],
+    unit_cost: float,
+) -> tuple[float, str]:
+    live_median = (
+        float(statistics.median(live_peers))
+        if live_peers
+        else 0.0
+    )
+    history_median = (
+        float(statistics.median(historical))
+        if historical
+        else 0.0
+    )
+    if live_peers and historical:
+        live_weight = 0.65 if len(live_peers) >= 2 else 0.45
+        return (
+            live_median * live_weight
+            + history_median * (1.0 - live_weight),
+            "blended live-peer and rolling-history median",
+        )
+    if live_peers:
+        return live_median, "live-peer median"
+    if historical:
+        return history_median, "rolling-history median"
+    return unit_cost, "single-listing estimate"
+
+
+def _reason(
+    *,
+    discount: float,
+    benchmark_source: str,
+    peer_rank: int,
+    peer_count: int,
+    history_count: int,
+    confidence: str,
+    stock: int,
+    anomaly_score: float,
+) -> str:
+    if discount > 0.005:
+        direction = f"{round(discount * 100):.0f}% below"
+    elif discount < -0.005:
+        direction = f"{abs(round(discount * 100)):.0f}% above"
+    else:
+        direction = "near"
+    rank_text = (
+        f"price rank {peer_rank} of {peer_count} live offers"
+        if peer_count > 1
+        else "only one live offer"
+    )
+    anomaly_text = (
+        f"; robust outlier score {anomaly_score:.1f}"
+        if anomaly_score >= 1.5
+        else ""
+    )
+    return (
+        f"{direction} the {benchmark_source}; {rank_text}; "
+        f"{history_count} historical sample(s); "
+        f"{confidence.lower()} confidence; stock {stock}"
+        f"{anomaly_text}."
+    )
+
+
 def score_shop_rows(
     rows: Sequence[Any],
     history: Any = None,
 ) -> tuple[list[ScoredShopRow], dict[str, Any]]:
     normalized_history = _normalize_history(history)
+    previous_prices = {
+        key: list(values)
+        for key, values in normalized_history["prices"].items()
+    }
+
     current_groups: dict[str, list[float]] = {}
     for row in rows:
         if int(getattr(row, "stock", 0) or 0) <= 0:
             continue
-        current_groups.setdefault(_market_key(row), []).append(_unit_cost(row))
-
-    signature = _snapshot_signature(current_groups)
-    prices = {
-        key: list(values)
-        for key, values in normalized_history["prices"].items()
-    }
-    if signature and signature != normalized_history["last_signature"]:
-        for key, values in current_groups.items():
-            prices.setdefault(key, []).append(float(statistics.median(values)))
-            prices[key] = prices[key][-MAX_HISTORY_SAMPLES:]
-        normalized_history["last_signature"] = signature
-    normalized_history["prices"] = prices
+        current_groups.setdefault(
+            _market_key(row),
+            [],
+        ).append(_unit_cost(row))
 
     scored: list[ScoredShopRow] = []
     for row in rows:
         key = _market_key(row)
         unit_cost = _unit_cost(row)
         current = list(current_groups.get(key, []))
-        historical = list(prices.get(key, []))
+        historical = list(previous_prices.get(key, []))
+        stock = max(
+            0,
+            int(getattr(row, "stock", 0) or 0),
+        )
 
-        benchmark_samples = current + historical
-        if benchmark_samples:
-            benchmark = float(statistics.median(benchmark_samples))
-        else:
-            benchmark = unit_cost
+        live_peers = list(current)
+        if stock > 0 and len(live_peers) > 1:
+            removed = False
+            without_self: list[float] = []
+            for value in live_peers:
+                if (
+                    not removed
+                    and abs(value - unit_cost) <= 1e-9
+                ):
+                    removed = True
+                    continue
+                without_self.append(value)
+            if without_self:
+                live_peers = without_self
 
+        benchmark, benchmark_source = _benchmark(
+            live_peers,
+            historical,
+            unit_cost,
+        )
         peer_count = len(current)
         history_count = len(historical)
-        if peer_count >= 3 or history_count >= 4:
-            confidence = "High"
-        elif peer_count >= 2 or history_count >= 1:
-            confidence = "Medium"
-        else:
-            confidence = "Low"
+        confidence = _confidence(
+            peer_count,
+            history_count,
+        )
+        discount = (
+            (benchmark - unit_cost) / benchmark
+            if benchmark > 0
+            else 0.0
+        )
 
-        if benchmark <= 0:
-            discount = 0.0
-        else:
-            discount = (benchmark - unit_cost) / benchmark
+        ordered_current = sorted(current)
+        peer_rank = (
+            1
+            + sum(
+                value < unit_cost - 1e-9
+                for value in ordered_current
+            )
+            if ordered_current
+            else 1
+        )
 
-        stock = max(0, int(getattr(row, "stock", 0) or 0))
-        if not benchmark_samples:
+        spread_samples = list(live_peers) + historical
+        spread_median = (
+            float(statistics.median(spread_samples))
+            if spread_samples
+            else benchmark
+        )
+        mad = _median_absolute_deviation(
+            spread_samples,
+            spread_median,
+        )
+        if mad > 1e-9:
+            anomaly_score = max(
+                0.0,
+                (spread_median - unit_cost)
+                / (1.4826 * mad),
+            )
+        else:
+            anomaly_score = max(
+                0.0,
+                discount * 4.0,
+            )
+
+        if not spread_samples:
             score = 50
             label = "UNPRICED"
+            alert_level = ""
         else:
-            # Center fair value around 50, then let a 50% discount approach 100.
-            score = int(round(50 + discount * 100))
-            score += min(6, stock // 8) if stock else 0
-            score = max(0, min(100, score))
-            if confidence != "Low" and score >= 90 and discount >= 0.30:
+            numeric_score = 50 + discount * 110
+            if confidence == "High":
+                numeric_score += 8
+            elif confidence == "Medium":
+                numeric_score += 4
+            if peer_count > 1:
+                numeric_score += max(
+                    0.0,
+                    8.0
+                    * (peer_count - peer_rank)
+                    / (peer_count - 1),
+                )
+            if stock > 0:
+                numeric_score += min(
+                    5.0,
+                    math.log2(stock + 1.0),
+                )
+            score = int(
+                round(
+                    max(
+                        0.0,
+                        min(100.0, numeric_score),
+                    )
+                )
+            )
+
+            possible_error = (
+                discount >= 0.62
+                and score >= 95
+                and confidence != "Low"
+                and anomaly_score >= 2.5
+                and (
+                    peer_count >= 3
+                    or history_count >= 3
+                )
+            )
+            if possible_error:
+                label = "POSSIBLE LISTING ERROR"
+                alert_level = "listing_error"
+            elif (
+                confidence != "Low"
+                and score >= 90
+                and discount >= 0.30
+            ):
                 label = "CAN'T MISS"
+                alert_level = "deal"
             elif score >= 78 and discount >= 0.16:
                 label = "STEAL"
+                alert_level = "deal"
             elif score >= 64 and discount >= 0.07:
                 label = "GOOD VALUE"
+                alert_level = ""
             elif score <= 28 and discount <= -0.22:
                 label = "OVERPRICED"
+                alert_level = ""
             else:
                 label = "FAIR"
+                alert_level = ""
 
         if stock <= 0:
-            score = min(score, 15)
+            score = min(int(score), 15)
             label = "OUT OF STOCK"
+            alert_level = ""
 
         scored.append(
             ScoredShopRow(
                 row=row,
                 deal=DealScore(
-                    score=score,
+                    score=int(score),
                     label=label,
                     unit_cost=round(unit_cost, 4),
                     benchmark=round(benchmark, 4),
-                    discount_fraction=round(discount, 6),
+                    discount_fraction=round(
+                        discount,
+                        6,
+                    ),
                     confidence=confidence,
+                    peer_count=peer_count,
+                    history_count=history_count,
+                    peer_rank=peer_rank,
+                    anomaly_score=round(
+                        anomaly_score,
+                        3,
+                    ),
+                    reason=_reason(
+                        discount=discount,
+                        benchmark_source=benchmark_source,
+                        peer_rank=peer_rank,
+                        peer_count=peer_count,
+                        history_count=history_count,
+                        confidence=confidence,
+                        stock=stock,
+                        anomaly_score=anomaly_score,
+                    ),
+                    alert_level=alert_level,
                 ),
             )
         )
 
+    signature = _snapshot_signature(current_groups)
+    updated_prices = {
+        key: list(values)
+        for key, values in previous_prices.items()
+    }
+    if (
+        signature
+        and signature
+        != normalized_history["last_signature"]
+    ):
+        for key, values in current_groups.items():
+            updated_prices.setdefault(
+                key,
+                [],
+            ).append(
+                float(statistics.median(values))
+            )
+            updated_prices[key] = updated_prices[
+                key
+            ][-MAX_HISTORY_SAMPLES:]
+        normalized_history["last_signature"] = (
+            signature
+        )
+    normalized_history["prices"] = updated_prices
+    normalized_history["version"] = HISTORY_VERSION
     return scored, normalized_history
 
 
@@ -181,37 +418,125 @@ def sort_scored_rows(
     values = list(rows)
     if mode == "Best value":
         key = lambda item: (
+            0
+            if item.deal.label
+            == "POSSIBLE LISTING ERROR"
+            else 1,
             -item.deal.score,
             -item.deal.discount_fraction,
-            0 if int(getattr(item.row, "stock", 0) or 0) > 0 else 1,
-            str(getattr(item.row, "item_name", "")).casefold(),
-            str(getattr(item.row, "shop", "")).casefold(),
+            0
+            if int(
+                getattr(
+                    item.row,
+                    "stock",
+                    0,
+                )
+                or 0
+            )
+            > 0
+            else 1,
+            str(
+                getattr(
+                    item.row,
+                    "item_name",
+                    "",
+                )
+            ).casefold(),
+            str(
+                getattr(
+                    item.row,
+                    "shop",
+                    "",
+                )
+            ).casefold(),
         )
     elif mode == "Shop A-Z":
         key = lambda item: (
-            str(getattr(item.row, "shop", "")).casefold(),
-            str(getattr(item.row, "item_name", "")).casefold(),
-            float(getattr(item.row, "cost", 0) or 0),
+            str(
+                getattr(
+                    item.row,
+                    "shop",
+                    "",
+                )
+            ).casefold(),
+            str(
+                getattr(
+                    item.row,
+                    "item_name",
+                    "",
+                )
+            ).casefold(),
+            float(
+                getattr(
+                    item.row,
+                    "cost",
+                    0,
+                )
+                or 0
+            ),
         )
     elif mode == "Grid":
         key = lambda item: (
-            str(getattr(item.row, "grid", "")),
-            str(getattr(item.row, "shop", "")).casefold(),
+            str(
+                getattr(
+                    item.row,
+                    "grid",
+                    "",
+                )
+            ),
+            str(
+                getattr(
+                    item.row,
+                    "shop",
+                    "",
+                )
+            ).casefold(),
         )
     elif mode == "Lowest cost":
         key = lambda item: (
             item.deal.unit_cost,
-            str(getattr(item.row, "item_name", "")).casefold(),
+            str(
+                getattr(
+                    item.row,
+                    "item_name",
+                    "",
+                )
+            ).casefold(),
         )
     elif mode == "Highest stock":
         key = lambda item: (
-            -int(getattr(item.row, "stock", 0) or 0),
-            str(getattr(item.row, "item_name", "")).casefold(),
+            -int(
+                getattr(
+                    item.row,
+                    "stock",
+                    0,
+                )
+                or 0
+            ),
+            str(
+                getattr(
+                    item.row,
+                    "item_name",
+                    "",
+                )
+            ).casefold(),
         )
     else:
         key = lambda item: (
-            str(getattr(item.row, "item_name", "")).casefold(),
+            str(
+                getattr(
+                    item.row,
+                    "item_name",
+                    "",
+                )
+            ).casefold(),
             item.deal.unit_cost,
-            str(getattr(item.row, "shop", "")).casefold(),
+            str(
+                getattr(
+                    item.row,
+                    "shop",
+                    "",
+                )
+            ).casefold(),
         )
     return sorted(values, key=key)

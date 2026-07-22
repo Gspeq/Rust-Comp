@@ -205,8 +205,14 @@ class WindowsReleaseContractTests(unittest.TestCase):
         app = (
             root / "rust_companion_plus" / "app.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('"Rust+ reconnecting"', app)
-        self.assertIn("first_new_error", app)
+        self.assertIn('"● Rust+ Reconnecting"', app)
+        self.assertIn("cached data remains available", app)
+        self.assertNotIn("first_new_error", app)
+        self.assertNotIn(
+            'messagebox.showwarning\n'
+            '                    "Rust+ reconnecting"',
+            app,
+        )
     def test_source_runner_tests_before_launch(self) -> None:
         root = Path(__file__).resolve().parents[1]
         runner = (
