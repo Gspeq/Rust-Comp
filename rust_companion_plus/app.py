@@ -21,12 +21,15 @@ from rust_companion_plus.windows_integration import (
 )
 from rust_companion_plus.ui.common import ACCENT
 from rust_companion_plus.ui.tabs.dashboard import DashboardTab
-from rust_companion_plus.ui.tabs.electrical import ElectricalTab
-from rust_companion_plus.ui.tabs.map_tab import MapTab
+from rust_companion_plus.ui.tabs.electrical_hub import ElectricalTab
+from rust_companion_plus.ui.tabs.map_enhanced import MapTab
 from rust_companion_plus.ui.tabs.notes import NotesTab
-from rust_companion_plus.ui.tabs.shops import ShopsTab
+from rust_companion_plus.ui.tabs.profiles import SavedServersTab
+from rust_companion_plus.ui.tabs.smart_devices import SmartDevicesTab
+from rust_companion_plus.ui.tabs.shops_enhanced import ShopsTab
 from rust_companion_plus.ui.tabs.team import TeamTab
 from rust_companion_plus.ui.tabs.tools import ToolsTab
+# FEATURE_HUBS_RETENTION_V1
 
 
 @dataclass
@@ -794,6 +797,14 @@ class RustCompanionApp(ctk.CTk):
                 self.context,
             ),
             "Electrical": ElectricalTab(
+                self.content,
+                self.context,
+            ),
+            "Smart Devices": SmartDevicesTab(
+                self.content,
+                self.context,
+            ),
+            "Saved Servers": SavedServersTab(
                 self.content,
                 self.context,
             ),

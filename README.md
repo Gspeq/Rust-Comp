@@ -111,3 +111,12 @@ A Rust client cannot always discover `app.port` from the normal game connection 
 ```powershell
 python -m unittest discover -s tests -v
 ```
+
+## Feature hubs and automatic retention
+
+- Saved server profiles are removed after 30 days without a live update and can be removed individually or all at once.
+- Map Intelligence includes bounded zoom, icon visibility controls, and map-derived starter-base recommendations with reasons and cautions.
+- Marketplace defaults to Best value, highlights strong and weak offers, and keeps advanced filters under an Advanced tab.
+- Smart Devices is a standalone Rust+ hub with saved entities, batch reads, batch controls, favorites, zones, and protection/capacity details.
+- Electrical opens with a simple natural-language planner while preserving the full visual circuit analyzer under Advanced Circuit.
+- Utilities is intentionally limited to recycler calculations; map routing and smart devices live in their dedicated hubs.

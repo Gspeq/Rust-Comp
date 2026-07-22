@@ -47,6 +47,7 @@ WORKSPACE_KEYS = (
     "heatmap_selected_resources",
     "threat_event_ids",
     "death_history",
+    "shop_value_history",
 )
 
 

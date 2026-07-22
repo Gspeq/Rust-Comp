@@ -131,9 +131,9 @@ class AutomaticDeathAndWorkflowTests(unittest.TestCase):
             / "tabs"
             / "tools.py"
         ).read_text(encoding="utf-8")
-        self.assertIn('"Grid & Distance"', source)
+        self.assertNotIn('"Grid & Distance"', source)
         self.assertIn('"Recycle"', source)
-        self.assertIn('"Smart Devices"', source)
+        self.assertNotIn('"Smart Devices"', source)
         self.assertNotIn('"TC Upkeep"', source)
         self.assertNotIn(
             "calculate_upkeep_hours",

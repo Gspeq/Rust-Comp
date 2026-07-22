@@ -28,6 +28,12 @@ from rust_companion_plus.services.fcm_registration import (
 from rust_companion_plus.services.rustplus_client import RustPlusClient, ServerSnapshot
 from rust_companion_plus.services.server_finder import DetectionReport, RustServerFinder
 from rust_companion_plus.services.server_profiles import ServerProfileVault
+from rust_companion_plus.services.profile_retention import (
+    PROFILE_RETENTION_DAYS,
+    delete_all_saved_profiles,
+    delete_saved_profile,
+    purge_expired_profiles,
+)
 from rust_companion_plus.storage import JsonStore
 
 
@@ -218,16 +224,59 @@ def _choose_saved_profile(
                 )
             )
 
+        print(_paint("  [D] Delete one saved profile", YELLOW))
+        print(_paint("  [A] Delete all saved profiles", RED))
         print(_paint("  [B] Back", GRAY))
         _rule("=", color=CYAN)
         choice = input(
             _paint(
-                "> Select a saved profile number or B: ",
+                "> Select a profile number, D, A, or B: ",
                 AMBER,
             )
         ).strip().casefold()
         if choice == "b":
             return ""
+        if choice == "d":
+            raw_index = input(
+                _paint("> Profile number to delete: ", AMBER)
+            ).strip()
+            try:
+                delete_index = int(raw_index)
+            except ValueError:
+                print(_paint("Enter a valid profile number.", RED))
+                continue
+            if not 1 <= delete_index <= len(profiles):
+                print(_paint("That saved profile number does not exist.", RED))
+                continue
+            record = profiles[delete_index - 1]
+            key = str(record.get("key") or "")
+            name = str(record.get("name") or key or "Unnamed server")
+            confirmation = input(
+                _paint(f"> Type DELETE to remove {name}: ", RED)
+            ).strip()
+            if confirmation == "DELETE":
+                delete_saved_profile(
+                    vault.store,
+                    key,
+                    asset_root=vault.asset_root,
+                )
+                print(_paint(f"[REMOVED] {name}", GREEN))
+            else:
+                print(_paint("Deletion cancelled.", GRAY))
+            continue
+        if choice == "a":
+            confirmation = input(
+                _paint("> Type DELETE ALL to clear every saved server: ", RED)
+            ).strip()
+            if confirmation == "DELETE ALL":
+                removed = delete_all_saved_profiles(
+                    vault.store,
+                    asset_root=vault.asset_root,
+                )
+                print(_paint(f"[REMOVED] {len(removed)} saved profile(s).", GREEN))
+            else:
+                print(_paint("Deletion cancelled.", GRAY))
+            continue
         try:
             index = int(choice)
         except ValueError:
@@ -1377,6 +1426,16 @@ def main(
 
     print_header()
     store = JsonStore()
+    expired_profiles = purge_expired_profiles(store)
+    if expired_profiles:
+        print(
+            _paint(
+                f"[PROFILE CLEANUP] Removed {len(expired_profiles)} saved server "
+                f"profile(s) older than {PROFILE_RETENTION_DAYS} days.",
+                GREEN,
+                bold=True,
+            )
+        )
     if args.reset_integration_setup:
         store.set("launcher_setup_version", 0)
     configure_first_run(store)
