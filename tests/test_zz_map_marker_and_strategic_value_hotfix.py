@@ -113,11 +113,23 @@ class MapMarkerHitTestingHotfixTests(unittest.TestCase):
 
 
 class HotfixActivationContractTests(unittest.TestCase):
-    def test_both_entrypoints_activate_hotfix_before_startup(self) -> None:
+    def test_central_bootstrap_activates_hotfix_before_gui_import(self) -> None:
+        root = Path(__file__).resolve().parents[1]
+        bootstrap = (
+            root / "rust_companion_plus" / "bootstrap.py"
+        ).read_text(encoding="utf-8")
+        self.assertIn("MAP_SHOP_HOTFIX_BOOTSTRAP_V2", bootstrap)
+        self.assertIn("import rust_companion_plus.hotfix_map_shop", bootstrap)
+        self.assertLess(
+            bootstrap.index("import rust_companion_plus.hotfix_map_shop"),
+            bootstrap.index("def launch_gui("),
+        )
+
+    def test_entrypoints_do_not_need_duplicate_hotfix_imports(self) -> None:
         root = Path(__file__).resolve().parents[1]
         for relative in ("main.py", "launcher.py"):
             source = (root / relative).read_text(encoding="utf-8")
-            self.assertIn("import rust_companion_plus.hotfix_map_shop", source)
+            self.assertNotIn("import rust_companion_plus.hotfix_map_shop", source)
 
 
 if __name__ == "__main__":
