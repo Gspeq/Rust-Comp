@@ -21,8 +21,10 @@ from rust_companion_plus.services.electrical_advisor import (
     strategic_recommendations,
 )
 from rust_companion_plus.services.shop_grid_map import (
+    SHOP_GRID_SPAN,
     render_selected_shop_grid,
     shop_grid_crop_box,
+    shop_grid_viewport,
 )
 from rust_companion_plus.services.smart_automation import (
     evaluate_rules,
@@ -243,11 +245,25 @@ class MapAndElectricalTests(unittest.TestCase):
         image = Image.new("RGBA", (500, 400), (1, 2, 3, 255))
         self.assertEqual(image.size, zoom_crop(image, 8, (0, 1)).size)
 
-    def test_shop_map_is_one_fixed_grid_with_one_marker(self) -> None:
+    def test_shop_map_is_two_by_two_with_one_true_position_marker(self) -> None:
         base = Image.new("RGBA", (1000, 1000), (20, 30, 40, 255))
-        selected = Row()
-        box = shop_grid_crop_box(base.size, selected.x, selected.y, 4000)
-        self.assertLess(box[2] - box[0], 100)
+        selected = Row(x=1111, y=2888)
+        viewport = shop_grid_viewport(
+            base.size,
+            selected.x,
+            selected.y,
+            4000,
+        )
+        box = shop_grid_crop_box(
+            base.size,
+            selected.x,
+            selected.y,
+            4000,
+        )
+        self.assertEqual(2, SHOP_GRID_SPAN)
+        self.assertEqual(2, viewport.span)
+        expected = 1000 / viewport.grid_count * 2
+        self.assertAlmostEqual(box[2] - box[0], expected, delta=3)
         rendered = render_selected_shop_grid(
             base,
             selected,
@@ -255,12 +271,14 @@ class MapAndElectricalTests(unittest.TestCase):
             output_size=(200, 200),
         )
         self.assertEqual((200, 200), rendered.size)
-        center_colors = {
+        marker_x = round(viewport.marker_fraction[0] * 200)
+        marker_y = round(viewport.marker_fraction[1] * 200)
+        marker_colors = {
             rendered.getpixel((x, y))[:3]
-            for x in range(88, 113)
-            for y in range(88, 113)
+            for x in range(max(0, marker_x - 16), min(200, marker_x + 17))
+            for y in range(max(0, marker_y - 16), min(200, marker_y + 17))
         }
-        self.assertIn((245, 158, 11), center_colors)
+        self.assertIn((245, 158, 11), marker_colors)
 
     def test_strategic_electrical_advice_catches_endgame_risks(self) -> None:
         nodes = [

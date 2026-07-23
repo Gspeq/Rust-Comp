@@ -15,6 +15,14 @@ from rust_companion_plus.services.electrical import analyze_setup
 from rust_companion_plus.services.electrical_advisor import (
     strategic_recommendations,
 )
+from rust_companion_plus.services.electrical_canvas import (
+    ASSUMPTION_HELP_TEXT,
+    ELECTRICAL_ZOOM_LEVELS,
+    clamp_zoom,
+    graph_layout_positions,
+    orthogonal_connection_points,
+    zoom_label,
+)
 from rust_companion_plus.ui.common import ACCENT, DANGER, MUTED
 
 
@@ -392,6 +400,8 @@ class ElectricalTab(ctk.CTkFrame):
         self.palette_drag: dict[str, Any] | None = None
         self._autosave_job: str | None = None
         self.assumptions = dict(DEFAULT_ASSUMPTIONS)
+        self.canvas_zoom = 1.0
+        self.canvas_zoom_text = ctk.StringVar(value=zoom_label(self.canvas_zoom))
 
         self.grid_columnconfigure(0, weight=1)
         self.grid_rowconfigure(2, weight=1)
@@ -537,12 +547,50 @@ class ElectricalTab(ctk.CTkFrame):
         toolbar.grid_columnconfigure(0, weight=1)
         self.wire_status = ctk.CTkLabel(
             toolbar,
-            text="Wire: orange output → blue input · middle-drag pans · Delete removes selection.",
+            text=(
+                "Wire: orange output → blue input · middle-drag pans · "
+                "Ctrl+wheel zooms · Delete removes selection."
+            ),
             text_color=MUTED,
             font=ctk.CTkFont(size=10),
             anchor="w",
         )
         self.wire_status.grid(row=0, column=0, sticky="ew")
+
+        ctk.CTkButton(
+            toolbar,
+            text="−",
+            width=30,
+            height=27,
+            fg_color="transparent",
+            border_width=1,
+            command=lambda: self.step_canvas_zoom(-1),
+        ).grid(row=0, column=1, padx=(6, 2))
+        self.canvas_zoom_menu = ctk.CTkOptionMenu(
+            toolbar,
+            values=[zoom_label(value) for value in ELECTRICAL_ZOOM_LEVELS],
+            variable=self.canvas_zoom_text,
+            width=76,
+            height=27,
+            command=self.set_canvas_zoom,
+        )
+        self.canvas_zoom_menu.grid(row=0, column=2, padx=2)
+        ctk.CTkButton(
+            toolbar,
+            text="+",
+            width=30,
+            height=27,
+            command=lambda: self.step_canvas_zoom(1),
+        ).grid(row=0, column=3, padx=2)
+        ctk.CTkButton(
+            toolbar,
+            text="100%",
+            width=50,
+            height=27,
+            fg_color="transparent",
+            border_width=1,
+            command=lambda: self.set_canvas_zoom("100%"),
+        ).grid(row=0, column=4, padx=(2, 8))
         ctk.CTkButton(
             toolbar,
             text="Cancel wire",
@@ -551,7 +599,7 @@ class ElectricalTab(ctk.CTkFrame):
             fg_color="transparent",
             border_width=1,
             command=self.cancel_wire,
-        ).grid(row=0, column=1, padx=(8, 0))
+        ).grid(row=0, column=5)
 
         canvas_frame = ctk.CTkFrame(shell, fg_color="#09111f", corner_radius=8)
         canvas_frame.grid(row=1, column=0, sticky="nsew", padx=(6, 0), pady=(0, 6))
@@ -562,16 +610,32 @@ class ElectricalTab(ctk.CTkFrame):
             canvas_frame,
             bg="#09111f",
             highlightthickness=0,
-            scrollregion=(0, 0, CANVAS_WIDTH, CANVAS_HEIGHT),
+            scrollregion=(
+                0,
+                0,
+                CANVAS_WIDTH * self.canvas_zoom,
+                CANVAS_HEIGHT * self.canvas_zoom,
+            ),
             cursor="arrow",
         )
         self.canvas.grid(row=0, column=0, sticky="nsew")
 
-        self.vscroll = ctk.CTkScrollbar(canvas_frame, orientation="vertical", command=self.canvas.yview)
+        self.vscroll = ctk.CTkScrollbar(
+            canvas_frame,
+            orientation="vertical",
+            command=self.canvas.yview,
+        )
         self.vscroll.grid(row=0, column=1, sticky="ns")
-        self.hscroll = ctk.CTkScrollbar(shell, orientation="horizontal", command=self.canvas.xview)
+        self.hscroll = ctk.CTkScrollbar(
+            shell,
+            orientation="horizontal",
+            command=self.canvas.xview,
+        )
         self.hscroll.grid(row=2, column=0, sticky="ew", padx=(6, 0), pady=(0, 6))
-        self.canvas.configure(yscrollcommand=self.vscroll.set, xscrollcommand=self.hscroll.set)
+        self.canvas.configure(
+            yscrollcommand=self.vscroll.set,
+            xscrollcommand=self.hscroll.set,
+        )
 
         self.canvas.bind("<Button-1>", self._canvas_blank_click)
         self.canvas.bind("<Delete>", lambda _event: self.delete_selected())
@@ -579,12 +643,99 @@ class ElectricalTab(ctk.CTkFrame):
         self.canvas.bind("<ButtonPress-2>", self._pan_start)
         self.canvas.bind("<B2-Motion>", self._pan_move)
         self.canvas.bind("<MouseWheel>", self._canvas_wheel)
+        self.canvas.bind("<Control-MouseWheel>", self._canvas_zoom_wheel)
+        self._draw_grid()
 
-        for x in range(0, CANVAS_WIDTH, GRID_SIZE):
-            self.canvas.create_line(x, 0, x, CANVAS_HEIGHT, fill="#102038", width=1, tags=("grid",))
-        for y in range(0, CANVAS_HEIGHT, GRID_SIZE):
-            self.canvas.create_line(0, y, CANVAS_WIDTH, y, fill="#102038", width=1, tags=("grid",))
+    def show_assumption_help(self) -> None:
+        messagebox.showinfo(
+            "Electrical planning assumptions",
+            ASSUMPTION_HELP_TEXT,
+        )
+
+    def _draw_grid(self) -> None:
+        self.canvas.delete("grid")
+        spacing = max(12.0, GRID_SIZE * self.canvas_zoom)
+        width = CANVAS_WIDTH * self.canvas_zoom
+        height = CANVAS_HEIGHT * self.canvas_zoom
+        x = 0.0
+        while x <= width:
+            self.canvas.create_line(
+                x, 0, x, height, fill="#102038", width=1, tags=("grid",)
+            )
+            x += spacing
+        y = 0.0
+        while y <= height:
+            self.canvas.create_line(
+                0, y, width, y, fill="#102038", width=1, tags=("grid",)
+            )
+            y += spacing
         self.canvas.tag_lower("grid")
+        self.canvas.configure(scrollregion=(0, 0, width, height))
+
+    def _scaled_coords(self, *values: float) -> tuple[float, ...]:
+        return tuple(float(value) * self.canvas_zoom for value in values)
+
+    def _canvas_to_model(self, x: float, y: float) -> tuple[float, float]:
+        zoom = max(0.01, self.canvas_zoom)
+        return (
+            self.canvas.canvasx(x) / zoom,
+            self.canvas.canvasy(y) / zoom,
+        )
+
+    def step_canvas_zoom(self, direction: int) -> None:
+        current = min(
+            range(len(ELECTRICAL_ZOOM_LEVELS)),
+            key=lambda index: abs(
+                ELECTRICAL_ZOOM_LEVELS[index] - self.canvas_zoom
+            ),
+        )
+        target = min(
+            len(ELECTRICAL_ZOOM_LEVELS) - 1,
+            max(0, current + int(direction)),
+        )
+        if target != current:
+            self.set_canvas_zoom(zoom_label(ELECTRICAL_ZOOM_LEVELS[target]))
+
+    def set_canvas_zoom(self, value: str | float) -> None:
+        if isinstance(value, str):
+            raw = value.strip().removesuffix("%")
+            try:
+                requested = float(raw) / 100.0
+            except ValueError:
+                requested = 1.0
+        else:
+            requested = float(value)
+        target = clamp_zoom(requested)
+        if abs(target - self.canvas_zoom) < 1e-9:
+            self.canvas_zoom_text.set(zoom_label(target))
+            return
+
+        old_zoom = max(0.01, self.canvas_zoom)
+        center_model_x = (
+            self.canvas.canvasx(self.canvas.winfo_width() / 2) / old_zoom
+        )
+        center_model_y = (
+            self.canvas.canvasy(self.canvas.winfo_height() / 2) / old_zoom
+        )
+        self.canvas_zoom = target
+        self.canvas_zoom_text.set(zoom_label(target))
+        self._redraw_all()
+
+        total_width = CANVAS_WIDTH * target
+        total_height = CANVAS_HEIGHT * target
+        left = center_model_x * target - self.canvas.winfo_width() / 2
+        top = center_model_y * target - self.canvas.winfo_height() / 2
+        self.canvas.xview_moveto(
+            min(1.0, max(0.0, left / max(1.0, total_width)))
+        )
+        self.canvas.yview_moveto(
+            min(1.0, max(0.0, top / max(1.0, total_height)))
+        )
+        self._schedule_autosave()
+
+    def _canvas_zoom_wheel(self, event) -> str:
+        self.step_canvas_zoom(1 if event.delta > 0 else -1)
+        return "break"
 
     def _build_inspector(self, parent) -> None:
         inspector = ctk.CTkFrame(parent, corner_radius=10)
@@ -659,12 +810,28 @@ class ElectricalTab(ctk.CTkFrame):
         assumptions.grid(row=7, column=0, sticky="ew", padx=8, pady=(7, 3))
         assumptions.grid_columnconfigure(1, weight=1)
 
+        ctk.CTkLabel(
+            assumptions,
+            text="Planning assumptions",
+            font=ctk.CTkFont(size=10, weight="bold"),
+            anchor="w",
+        ).grid(row=0, column=0, columnspan=2, sticky="ew", padx=2, pady=(0, 3))
+        ctk.CTkButton(
+            assumptions,
+            text="?",
+            width=25,
+            height=23,
+            fg_color="transparent",
+            border_width=1,
+            command=self.show_assumption_help,
+        ).grid(row=0, column=2, padx=(4, 2), pady=(0, 3))
+
         labels = (
             ("Solar avg %", "solar_entry"),
             ("Wind avg %", "wind_entry"),
             ("Battery charge %", "charge_entry"),
         )
-        for row_index, (label, attribute) in enumerate(labels):
+        for row_index, (label, attribute) in enumerate(labels, start=1):
             ctk.CTkLabel(
                 assumptions,
                 text=label,
@@ -672,7 +839,7 @@ class ElectricalTab(ctk.CTkFrame):
                 font=ctk.CTkFont(size=9),
             ).grid(row=row_index, column=0, sticky="w", padx=2, pady=1)
             entry = ctk.CTkEntry(assumptions, height=25)
-            entry.grid(row=row_index, column=1, sticky="ew", padx=2, pady=1)
+            entry.grid(row=row_index, column=1, columnspan=2, sticky="ew", padx=2, pady=1)
             setattr(self, attribute, entry)
 
         ctk.CTkButton(
@@ -680,7 +847,7 @@ class ElectricalTab(ctk.CTkFrame):
             text="Apply assumptions",
             height=26,
             command=self.apply_assumptions,
-        ).grid(row=3, column=0, columnspan=2, sticky="ew", padx=2, pady=(4, 1))
+        ).grid(row=4, column=0, columnspan=3, sticky="ew", padx=2, pady=(4, 1))
 
         self.math_model_label = ctk.CTkLabel(
             inspector,
@@ -829,12 +996,16 @@ class ElectricalTab(ctk.CTkFrame):
         bottom = top + self.canvas.winfo_height()
 
         if left <= event.x_root <= right and top <= event.y_root <= bottom:
-            x = self.canvas.canvasx(event.x_root - left)
-            y = self.canvas.canvasy(event.y_root - top)
+            x, y = self._canvas_to_model(
+                event.x_root - left,
+                event.y_root - top,
+            )
             self.add_node(component, x, y)
         elif dx < 6 and dy < 6:
-            x = self.canvas.canvasx(self.canvas.winfo_width() / 2)
-            y = self.canvas.canvasy(self.canvas.winfo_height() / 2)
+            x, y = self._canvas_to_model(
+                self.canvas.winfo_width() / 2,
+                self.canvas.winfo_height() / 2,
+            )
             self.add_node(component, x, y)
 
     def add_node(self, component: str, x: float, y: float) -> None:
@@ -856,58 +1027,61 @@ class ElectricalTab(ctk.CTkFrame):
 
     def _draw_node(self, node: dict[str, Any]) -> None:
         node_id = str(node["id"])
-        x = float(node.get("x", 50))
-        y = float(node.get("y", 50))
+        x, y = self._scaled_coords(
+            float(node.get("x", 50)),
+            float(node.get("y", 50)),
+        )
+        width = NODE_WIDTH * self.canvas_zoom
+        height = NODE_HEIGHT * self.canvas_zoom
         row = self.catalog.get(str(node.get("component", "")), {})
         category = str(row.get("category", "utility")).lower()
         fill = CATEGORY_COLORS.get(category, "#374151")
-        r = CONNECTOR_RADIUS
+        r = max(3.0, CONNECTOR_RADIUS * self.canvas_zoom)
+        title_size = max(7, round(9 * self.canvas_zoom))
+        detail_size = max(7, round(8 * self.canvas_zoom))
 
         body = self.canvas.create_rectangle(
-            x,
-            y,
-            x + NODE_WIDTH,
-            y + NODE_HEIGHT,
+            x, y, x + width, y + height,
             fill=fill,
             outline="#64748b",
-            width=2,
+            width=max(1, round(2 * self.canvas_zoom)),
             tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
         )
         title = self.canvas.create_text(
-            x + 9,
-            y + 8,
+            x + 9 * self.canvas_zoom,
+            y + 8 * self.canvas_zoom,
             text=str(node.get("component", "Component")),
             fill="#f8fafc",
-            font=("Segoe UI", 9, "bold"),
+            font=("Segoe UI", title_size, "bold"),
             anchor="nw",
-            width=NODE_WIDTH - 18,
+            width=max(50, width - 18 * self.canvas_zoom),
             tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
         )
         detail = self.canvas.create_text(
-            x + 9,
-            y + 32,
+            x + 9 * self.canvas_zoom,
+            y + 32 * self.canvas_zoom,
             text=self._node_detail(node),
             fill="#cbd5e1",
-            font=("Segoe UI", 8),
+            font=("Segoe UI", detail_size),
             anchor="nw",
-            width=NODE_WIDTH - 18,
+            width=max(50, width - 18 * self.canvas_zoom),
             tags=("node", f"node:{node_id}", f"node-body:{node_id}"),
         )
         input_dot = self.canvas.create_oval(
             x - r,
-            y + NODE_HEIGHT / 2 - r,
+            y + height / 2 - r,
             x + r,
-            y + NODE_HEIGHT / 2 + r,
+            y + height / 2 + r,
             fill="#38bdf8",
             outline="#e0f2fe",
             width=1,
             tags=("connector", "input", f"input:{node_id}"),
         )
         output_dot = self.canvas.create_oval(
-            x + NODE_WIDTH - r,
-            y + NODE_HEIGHT / 2 - r,
-            x + NODE_WIDTH + r,
-            y + NODE_HEIGHT / 2 + r,
+            x + width - r,
+            y + height / 2 - r,
+            x + width + r,
+            y + height / 2 + r,
             fill="#f59e0b",
             outline="#fffbeb",
             width=1,
@@ -922,11 +1096,31 @@ class ElectricalTab(ctk.CTkFrame):
         }
 
         for item in (body, title, detail):
-            self.canvas.tag_bind(item, "<ButtonPress-1>", lambda event, nid=node_id: self._node_press(event, nid))
-            self.canvas.tag_bind(item, "<B1-Motion>", lambda event, nid=node_id: self._node_drag(event, nid))
-            self.canvas.tag_bind(item, "<ButtonRelease-1>", lambda event, nid=node_id: self._node_release(event, nid))
-        self.canvas.tag_bind(input_dot, "<Button-1>", lambda event, nid=node_id: self._input_clicked(event, nid))
-        self.canvas.tag_bind(output_dot, "<Button-1>", lambda event, nid=node_id: self._output_clicked(event, nid))
+            self.canvas.tag_bind(
+                item,
+                "<ButtonPress-1>",
+                lambda event, nid=node_id: self._node_press(event, nid),
+            )
+            self.canvas.tag_bind(
+                item,
+                "<B1-Motion>",
+                lambda event, nid=node_id: self._node_drag(event, nid),
+            )
+            self.canvas.tag_bind(
+                item,
+                "<ButtonRelease-1>",
+                lambda event, nid=node_id: self._node_release(event, nid),
+            )
+        self.canvas.tag_bind(
+            input_dot,
+            "<Button-1>",
+            lambda event, nid=node_id: self._input_clicked(event, nid),
+        )
+        self.canvas.tag_bind(
+            output_dot,
+            "<Button-1>",
+            lambda event, nid=node_id: self._output_clicked(event, nid),
+        )
 
     def _node_detail(self, node: dict[str, Any]) -> str:
         row = self.catalog.get(str(node.get("component", "")), {})
@@ -940,10 +1134,12 @@ class ElectricalTab(ctk.CTkFrame):
         node = self._node(node_id)
         if node is None:
             return
-        x = self.canvas.canvasx(event.x)
-        y = self.canvas.canvasy(event.y)
+        x, y = self._canvas_to_model(event.x, event.y)
         self.drag_node_id = node_id
-        self.drag_offset = (x - float(node.get("x", 0)), y - float(node.get("y", 0)))
+        self.drag_offset = (
+            x - float(node.get("x", 0)),
+            y - float(node.get("y", 0)),
+        )
 
     def _node_drag(self, event, node_id: str) -> None:
         if self.drag_node_id != node_id:
@@ -951,8 +1147,9 @@ class ElectricalTab(ctk.CTkFrame):
         node = self._node(node_id)
         if node is None:
             return
-        x = self.canvas.canvasx(event.x) - self.drag_offset[0]
-        y = self.canvas.canvasy(event.y) - self.drag_offset[1]
+        model_x, model_y = self._canvas_to_model(event.x, event.y)
+        x = model_x - self.drag_offset[0]
+        y = model_y - self.drag_offset[1]
         node["x"] = max(8.0, min(x, CANVAS_WIDTH - NODE_WIDTH - 8))
         node["y"] = max(8.0, min(y, CANVAS_HEIGHT - NODE_HEIGHT - 8))
         self._position_node(node_id)
@@ -968,25 +1165,37 @@ class ElectricalTab(ctk.CTkFrame):
         items = self.node_items.get(node_id)
         if node is None or items is None:
             return
-        x = float(node.get("x", 0))
-        y = float(node.get("y", 0))
-        r = CONNECTOR_RADIUS
-        self.canvas.coords(items["body"], x, y, x + NODE_WIDTH, y + NODE_HEIGHT)
-        self.canvas.coords(items["title"], x + 9, y + 8)
-        self.canvas.coords(items["detail"], x + 9, y + 32)
+        x, y = self._scaled_coords(
+            float(node.get("x", 0)),
+            float(node.get("y", 0)),
+        )
+        width = NODE_WIDTH * self.canvas_zoom
+        height = NODE_HEIGHT * self.canvas_zoom
+        r = max(3.0, CONNECTOR_RADIUS * self.canvas_zoom)
+        self.canvas.coords(items["body"], x, y, x + width, y + height)
+        self.canvas.coords(
+            items["title"],
+            x + 9 * self.canvas_zoom,
+            y + 8 * self.canvas_zoom,
+        )
+        self.canvas.coords(
+            items["detail"],
+            x + 9 * self.canvas_zoom,
+            y + 32 * self.canvas_zoom,
+        )
         self.canvas.coords(
             items["input"],
             x - r,
-            y + NODE_HEIGHT / 2 - r,
+            y + height / 2 - r,
             x + r,
-            y + NODE_HEIGHT / 2 + r,
+            y + height / 2 + r,
         )
         self.canvas.coords(
             items["output"],
-            x + NODE_WIDTH - r,
-            y + NODE_HEIGHT / 2 - r,
-            x + NODE_WIDTH + r,
-            y + NODE_HEIGHT / 2 + r,
+            x + width - r,
+            y + height / 2 - r,
+            x + width + r,
+            y + height / 2 + r,
         )
 
     def _output_clicked(self, event, node_id: str) -> None:
@@ -1042,42 +1251,57 @@ class ElectricalTab(ctk.CTkFrame):
         line = self.canvas.create_line(
             *coords,
             fill="#f59e0b",
-            width=3,
-            smooth=True,
-            splinesteps=20,
+            width=max(2, round(3 * self.canvas_zoom)),
             arrow=tk.LAST,
-            arrowshape=(10, 12, 5),
+            arrowshape=(
+                max(7, round(10 * self.canvas_zoom)),
+                max(8, round(12 * self.canvas_zoom)),
+                max(4, round(5 * self.canvas_zoom)),
+            ),
+            joinstyle=tk.ROUND,
             tags=("wire", f"wire:{connection_id}"),
         )
         self.connection_items[connection_id] = line
         if self.canvas.find_withtag("node"):
             self.canvas.tag_lower(line, "node")
         self.canvas.tag_raise(line, "grid")
-        self.canvas.tag_bind(line, "<Button-1>", lambda event, cid=connection_id: self._wire_clicked(event, cid))
+        self.canvas.tag_bind(
+            line,
+            "<Button-1>",
+            lambda event, cid=connection_id: self._wire_clicked(event, cid),
+        )
 
-    def _connection_coords(self, connection: dict[str, Any]) -> tuple[float, ...] | None:
-        source = self._node(str(connection.get("source", "")))
-        target = self._node(str(connection.get("target", "")))
-        if source is None or target is None:
+    def _connection_coords(
+        self,
+        connection: dict[str, Any],
+    ) -> tuple[float, ...] | None:
+        try:
+            lane_index = next(
+                index
+                for index, row in enumerate(self.connections)
+                if row is connection
+                or str(row.get("id")) == str(connection.get("id"))
+            )
+        except StopIteration:
+            lane_index = 0
+        model_coords = orthogonal_connection_points(
+            self.nodes,
+            connection,
+            node_width=NODE_WIDTH,
+            node_height=NODE_HEIGHT,
+            lane_index=lane_index,
+        )
+        if model_coords is None:
             return None
-        sx = float(source.get("x", 0)) + NODE_OUTPUT_X
-        sy = float(source.get("y", 0)) + NODE_HEIGHT / 2
-        tx = float(target.get("x", 0)) + NODE_INPUT_X
-        ty = float(target.get("y", 0)) + NODE_HEIGHT / 2
-        bend = max(55.0, abs(tx - sx) * 0.45)
-        if tx >= sx:
-            return (sx, sy, sx + bend, sy, tx - bend, ty, tx, ty)
-        detour = max(sy, ty) + 90
-        return (sx, sy, sx + 55, sy, sx + 55, detour, tx - 55, detour, tx - 55, ty, tx, ty)
+        return self._scaled_coords(*model_coords)
 
     def _wire_clicked(self, _event, connection_id: str) -> None:
         self.canvas.focus_set()
         self.select_connection(connection_id)
 
     def _update_connections_for_node(self, node_id: str) -> None:
+        _ = node_id
         for connection in self.connections:
-            if connection.get("source") != node_id and connection.get("target") != node_id:
-                continue
             connection_id = str(connection.get("id"))
             item = self.connection_items.get(connection_id)
             coords = self._connection_coords(connection)
@@ -1107,10 +1331,24 @@ class ElectricalTab(ctk.CTkFrame):
     def _refresh_selection_style(self) -> None:
         for node_id, items in self.node_items.items():
             selected = node_id == self.selected_node_id
-            self.canvas.itemconfigure(items["body"], outline=ACCENT if selected else "#64748b", width=4 if selected else 2)
+            self.canvas.itemconfigure(
+                items["body"],
+                outline=ACCENT if selected else "#64748b",
+                width=max(
+                    1,
+                    round((4 if selected else 2) * self.canvas_zoom),
+                ),
+            )
         for connection_id, item in self.connection_items.items():
             selected = connection_id == self.selected_connection_id
-            self.canvas.itemconfigure(item, fill="#fde047" if selected else "#f59e0b", width=5 if selected else 3)
+            self.canvas.itemconfigure(
+                item,
+                fill="#fde047" if selected else "#f59e0b",
+                width=max(
+                    2,
+                    round((5 if selected else 3) * self.canvas_zoom),
+                ),
+            )
 
     def _canvas_blank_click(self, event) -> None:
         current = self.canvas.find_withtag("current")
@@ -1130,8 +1368,14 @@ class ElectricalTab(ctk.CTkFrame):
     def _pan_move(self, event) -> None:
         self.canvas.scan_dragto(event.x, event.y, gain=1)
 
-    def _canvas_wheel(self, event) -> None:
-        self.canvas.yview_scroll(int(-1 * (event.delta / 120)), "units")
+    def _canvas_wheel(self, event) -> str | None:
+        if int(getattr(event, "state", 0) or 0) & 0x0004:
+            return self._canvas_zoom_wheel(event)
+        self.canvas.yview_scroll(
+            int(-1 * (event.delta / 120)),
+            "units",
+        )
+        return None
 
     def _refresh_inspector(self) -> None:
         node = self._node(self.selected_node_id) if self.selected_node_id else None
@@ -1286,16 +1530,19 @@ class ElectricalTab(ctk.CTkFrame):
     def auto_layout(self) -> None:
         if not self.nodes:
             return
-        grouped: dict[int, list[dict[str, Any]]] = defaultdict(list)
-        for node in sorted(self.nodes, key=lambda row: str(row.get("component", "")).casefold()):
-            category = _node_category(node, self.catalog)
-            grouped[CATEGORY_ORDER.get(category, 2)].append(node)
-
-        columns = sorted(grouped)
-        for display_column, category_column in enumerate(columns):
-            for row_index, node in enumerate(grouped[category_column]):
-                node["x"] = 70 + display_column * 240
-                node["y"] = 65 + row_index * 92
+        positions = graph_layout_positions(
+            self.nodes,
+            self.connections,
+            self.catalog,
+            canvas_width=CANVAS_WIDTH,
+            canvas_height=CANVAS_HEIGHT,
+            node_width=NODE_WIDTH,
+            node_height=NODE_HEIGHT,
+        )
+        for node in self.nodes:
+            position = positions.get(str(node.get("id")))
+            if position is not None:
+                node["x"], node["y"] = position
         self._redraw_all()
         self.recalculate()
         self._schedule_autosave()
@@ -1438,6 +1685,7 @@ class ElectricalTab(ctk.CTkFrame):
         self.canvas.delete("wire")
         self.node_items.clear()
         self.connection_items.clear()
+        self._draw_grid()
         for connection in self.connections:
             self._draw_connection(connection)
         for node in self.nodes:
@@ -1467,7 +1715,11 @@ class ElectricalTab(ctk.CTkFrame):
     def _load_state(self) -> None:
         state = self.context.store.get(CANVAS_STATE_KEY, {})
         if isinstance(state, dict) and isinstance(state.get("nodes"), list):
-            self.nodes = [dict(node) for node in state.get("nodes", []) if isinstance(node, dict)]
+            self.nodes = [
+                dict(node)
+                for node in state.get("nodes", [])
+                if isinstance(node, dict)
+            ]
             self.connections = [
                 dict(connection)
                 for connection in state.get("connections", [])
@@ -1476,9 +1728,13 @@ class ElectricalTab(ctk.CTkFrame):
             self.assumptions = dict(DEFAULT_ASSUMPTIONS)
             if isinstance(state.get("assumptions"), dict):
                 self.assumptions.update(state["assumptions"])
+            self.canvas_zoom = clamp_zoom(state.get("zoom", 1.0))
+            self.canvas_zoom_text.set(zoom_label(self.canvas_zoom))
             name = str(state.get("name", "Main Base") or "Main Base")
         else:
             name = "Main Base"
+            self.canvas_zoom = 1.0
+            self.canvas_zoom_text.set("100%")
             self._migrate_legacy_setup()
 
         self.name_entry.delete(0, "end")
@@ -1554,10 +1810,14 @@ class ElectricalTab(ctk.CTkFrame):
             "nodes": [dict(node) for node in self.nodes],
             "connections": [dict(connection) for connection in self.connections],
             "assumptions": dict(self.assumptions),
+            "zoom": float(self.canvas_zoom),
         }
         self.context.store.set(CANVAS_STATE_KEY, state)
         if show_message:
-            messagebox.showinfo("Circuit saved", "The visual electrical circuit was saved.")
+            messagebox.showinfo(
+                "Circuit saved",
+                "The visual electrical circuit was saved.",
+            )
 
     def _schedule_autosave(self) -> None:
         if self._autosave_job is not None:

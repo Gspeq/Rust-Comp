@@ -322,7 +322,7 @@ class MapTab(ctk.CTkFrame):
         ctk.CTkLabel(
             icon_controls,
             text=(
-                "Off uses the cleaned analyzed map texture when "
+                "Off uses a separate icon-free Rust+ map request when "
                 "available. Heatmap opacity is fixed at maximum "
                 "with balanced smoothing."
             ),
@@ -545,8 +545,10 @@ class MapTab(ctk.CTkFrame):
         world_size = self.current_world_size()
 
         def work():
-            image = self.context.rust.fetch_map(
-                self.context.credentials
+            clean_image, icon_image = (
+                self.context.rust.fetch_map_variants(
+                    self.context.credentials
+                )
             )
             markers = (
                 self.context.snapshot.markers
@@ -558,7 +560,7 @@ class MapTab(ctk.CTkFrame):
                 detection=self.context.detection,
                 profile_record=self.context.profile_record,
                 world_size=world_size,
-                map_image=image,
+                map_image=clean_image,
                 markers=markers,
                 force_refresh=True,
             )
@@ -566,17 +568,14 @@ class MapTab(ctk.CTkFrame):
                 result.source_dir,
                 world_size,
             )
-            return image, result, bundle
+            return clean_image, icon_image, result, bundle
 
         def success(payload) -> None:
-            image, result, bundle = payload
-            self.context.map_image = image
-            self.map_image_with_icons = image.copy()
-            self.map_image_clean = self._load_clean_map_texture(
-                result.source_dir
-            )
-            if self.map_image_clean is None:
-                self.map_image_clean = image.copy()
+            clean_image, icon_image, result, bundle = payload
+            self.context.map_image = clean_image
+            self.context.clean_map_image = clean_image.copy()
+            self.map_image_with_icons = icon_image.copy()
+            self.map_image_clean = clean_image.copy()
             self.show_server_icons.set(False)
             self.context.heatmap_bundle = bundle
             self.current_source_path = str(
@@ -610,7 +609,7 @@ class MapTab(ctk.CTkFrame):
                 try:
                     saved = vault.save_map_image(
                         key,
-                        image,
+                        clean_image,
                     )
                 except Exception:
                     saved = ""
@@ -745,6 +744,7 @@ class MapTab(ctk.CTkFrame):
             self.current_source_path = str(source)
             self.context.heatmap_bundle = bundle
             self.context.map_image = image
+            self.context.clean_map_image = image.copy()
             self.map_image_with_icons = None
             self.map_image_clean = image.copy()
             self.show_server_icons.set(False)

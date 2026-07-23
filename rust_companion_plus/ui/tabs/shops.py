@@ -1004,7 +1004,7 @@ class ShopsTab(ctk.CTkFrame):
 
         self.minimap_title = ctk.CTkLabel(
             minimap_panel,
-            text="Item shop minimap",
+            text="2×2 shop area",
             font=ctk.CTkFont(size=15, weight="bold"),
             anchor="w",
         )
@@ -1018,8 +1018,8 @@ class ShopsTab(ctk.CTkFrame):
         self.minimap_hint = ctk.CTkLabel(
             minimap_panel,
             text=(
-                "Click an offer. Orange is the selected shop; green "
-                "shows other shops carrying the same item."
+                "Click an offer to view a clean 2×2 grid area around "
+                "the selected shop."
             ),
             text_color=MUTED,
             font=ctk.CTkFont(size=10),
@@ -1340,16 +1340,16 @@ class ShopsTab(ctk.CTkFrame):
         if clean_image is None:
             self.minimap_hint.configure(
                 text=(
-                    "The selected shop is centered in its fixed grid cell. "
-                    "Loading a clean icon-free Rust+ map texture…"
+                    "Loading a clean icon-free Rust+ map for the "
+                    "selected shop's 2×2 area…"
                 )
             )
             self._request_minimap_base_map()
         else:
             self.minimap_hint.configure(
                 text=(
-                    "The selected shop is centered in its fixed grid cell. "
-                    "No other shop, event, team, or server icons are shown."
+                    "The selected shop is marked at its true position "
+                    "inside a clean 2×2 grid area. No unrelated icons are shown."
                 )
             )
 
@@ -1453,11 +1453,11 @@ class ShopsTab(ctk.CTkFrame):
         self._minimap_cache_key = None
         self._minimap_ctk_image = None
         if hasattr(self, "minimap_title"):
-            self.minimap_title.configure(text="Item shop minimap")
+            self.minimap_title.configure(text="2×2 shop area")
             self.minimap_hint.configure(
                 text=(
-                    "Click an offer. Orange is the selected shop; green "
-                    "shows other shops carrying the same item."
+                    "Click an offer to view a clean 2×2 grid area around "
+                    "the selected shop."
                 )
             )
             self.minimap_label.configure(

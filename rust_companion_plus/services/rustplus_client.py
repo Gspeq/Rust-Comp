@@ -200,6 +200,58 @@ class RustPlusClient:
             except Exception:
                 pass
 
+    def fetch_map_variants(
+        self,
+        credentials: RustCredentials,
+    ):
+        """Fetch clean and icon-rendered maps through one Rust+ connection."""
+        if not credentials.is_complete():
+            raise RustPlusRequestError("Complete the Rust+ credentials first.")
+        return asyncio.run(self._fetch_map_variants(credentials))
+
+    async def _fetch_map_variants(
+        self,
+        credentials: RustCredentials,
+    ):
+        RustError, RustSocket, ServerDetails = self._imports()
+        details = ServerDetails(
+            credentials.host,
+            credentials.port,
+            credentials.steam_id,
+            credentials.player_token,
+        )
+        socket = RustSocket(details)
+        try:
+            await socket.connect()
+            clean_image = await socket.get_map(
+                add_icons=False,
+                add_events=False,
+                add_vending_machines=False,
+                add_team_positions=False,
+                override_images={},
+                add_grid=True,
+            )
+            if isinstance(clean_image, RustError):
+                raise RustPlusRequestError(
+                    str(getattr(clean_image, "reason", "Clean map request failed"))
+                )
+            icon_image = await socket.get_map(
+                add_icons=True,
+                add_events=True,
+                add_vending_machines=True,
+                add_team_positions=True,
+                override_images={},
+                add_grid=True,
+            )
+            if isinstance(icon_image, RustError):
+                icon_image = clean_image.copy()
+            return clean_image, icon_image
+        finally:
+            try:
+                await socket.disconnect()
+            except Exception:
+                pass
+
     def fetch_map(self, credentials: RustCredentials):
         if not credentials.is_complete():
             raise RustPlusRequestError("Complete the Rust+ credentials first.")

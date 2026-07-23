@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
-GUIDE_VERSION = "0.8.1"
+GUIDE_VERSION = "0.8.2"
 GUIDE_LAST_UPDATED = "2026-07-22"
 
 
@@ -65,8 +65,8 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
     "Map": GuideSection(
         name="Map",
         summary=(
-            "Map Intelligence combines live or cached maps, cached interactive zoom and pan, "
-            "server-marker visibility, multiple quick overlays, and mainland-aware starter analysis."
+            "Map Intelligence combines separate clean and icon-rendered Rust+ maps, cached interactive zoom and pan, "
+            "multiple quick overlays, and mainland-aware starter analysis."
         ),
         useful_when=(
             "Use it for route planning, build-location comparison, resource access, and inspecting a specific area."
@@ -79,7 +79,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
             ),
             GuideFeature(
                 "Marker toggle",
-                "Shows or hides Rust+ server icons without deleting marker data.",
+                "Switches between separately requested clean and icon-rendered Rust+ maps, so shops, events, team positions, and other API icons actually disappear when disabled.",
                 "Useful when vending, event, or team icons obscure terrain.",
             ),
             GuideFeature(
@@ -123,7 +123,7 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
     "Shops": GuideSection(
         name="Shops",
         summary=(
-            "The marketplace searches Rust+ vending offers, marks blueprints, uses progression-aware deal ratings, sends low-noise alerts, and shows the selected shop's exact grid cell."
+            "The marketplace searches Rust+ vending offers, marks blueprints, uses calibrated progression-aware deal ratings, sends low-noise alerts, and shows a clean 2×2 area around the selected shop."
         ),
         useful_when=(
             "Use it when buying or selling, watching progression-specific loot, or checking whether a price is unusually strong."
@@ -136,12 +136,12 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
             ),
             GuideFeature(
                 "Best Value",
-                "Compares normalized unit cost within identical markets, then uses item progression tier and payment importance so primitive goods can be good value but never STEAL or CAN'T MISS.",
+                "Compares unique-shop prices and rolling history within identical markets, then adjusts for volatility, exact item tier, payment burden, blueprint burden, stock, and evidence confidence.",
                 "Useful for finding strong deals without comparing unrelated trades.",
             ),
             GuideFeature(
-                "Fixed grid map",
-                "Selecting an offer shows only that shop's grid section at a fixed zoom with one shop marker and no unrelated icons.",
+                "2×2 shop-area map",
+                "Selecting an offer shows an aligned 2×2 grid neighborhood with the shop at its true position, one marker, and no unrelated server icons.",
                 "Useful for recognizing the immediate terrain around the destination without a cluttered full map.",
             ),
             GuideFeature(
@@ -162,12 +162,12 @@ GUIDE_SECTIONS: dict[str, GuideSection] = {
         features=(
             GuideFeature(
                 "Visual circuit designer",
-                "Drag or click equipment, wire outputs to inputs, arrange nodes, edit quantity/state/zone, and save the complete circuit.",
+                "Drag or click equipment, zoom from 50% to 200%, wire clean orthogonal paths, graph-arrange by real power flow, edit quantity/state/zone, and save the complete circuit.",
                 "Useful whenever topology matters instead of only component totals.",
             ),
             GuideFeature(
                 "Integrated power model",
-                "Shows load, peak and average generation, battery storage/output, no-generation runtime, and charging headroom directly above the canvas.",
+                "Shows load, peak and average generation, battery storage/output, no-generation runtime, and charging headroom. The clickable assumptions help explains solar average, wind average, battery charge efficiency, and the formulas.",
                 "Useful for determining whether a circuit works through night, weather, or generator loss.",
             ),
             GuideFeature(

@@ -207,9 +207,9 @@ class MapTab(BaseMapTab):
 
         self.toolbar_icons = ctk.CTkSwitch(
             toolbar,
-            text="Icons",
+            text="Server icons",
             variable=self.show_server_icons,
-            command=self.render_map,
+            command=self._icons_changed,
         )
         self.toolbar_icons.grid(row=0, column=5, padx=6)
 
@@ -300,6 +300,10 @@ class MapTab(BaseMapTab):
             lambda _event: self._request_render(interactive=True),
             add="+",
         )
+
+    def _icons_changed(self) -> None:
+        self._invalidate_composite_cache()
+        self.render_map()
 
     def _zoom_number(self) -> float:
         raw = (

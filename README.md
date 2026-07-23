@@ -188,3 +188,17 @@ mid/high-tier progression item. Primitive/common items such as hunting bows,
 wood, and stone remain FAIR even when relatively cheap and cannot produce
 automatic urgent deal alerts. The former POSSIBLE LISTING ERROR category is removed; extreme
 actionable bargains use the normal STEAL/CAN'T MISS ratings.
+
+## Electrical, map, and shop precision
+
+<!-- ELECTRICAL_MAP_SHOP_PRECISION_082 -->
+
+Version 0.8.2 adds 50%-200% electrical-canvas zoom, graph-aware arranging,
+orthogonal obstacle-aware wires, and clickable help for solar, wind, and
+battery assumptions. The main map now requests both clean and icon-rendered
+Rust+ variants so the server-icon switch changes the actual map texture.
+
+The shop minimap shows a clean aligned 2×2 grid neighborhood and marks the
+selected vending machine at its true position. Deal scoring now deduplicates
+peer evidence by shop and considers exact item classification, volatility,
+payment burden, blueprint burden, stock, and historical confidence.

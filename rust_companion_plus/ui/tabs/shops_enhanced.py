@@ -231,8 +231,8 @@ class ShopsTab(BaseShopsTab):
         self._hide_horizontal_scrollbars(self)
         self.table_note.configure(
             text=(
-                "BP listings are marked directly. Best value uses unit price, "
-                "live peers and history, then limits STEAL/CAN'T MISS to worthwhile progression items."
+                "BP listings are marked directly. Best value uses unique-shop peers, "
+                "history, volatility, progression tier, payment burden, and blueprint burden."
             )
         )
 

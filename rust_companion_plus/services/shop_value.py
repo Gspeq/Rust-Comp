@@ -9,7 +9,7 @@ from dataclasses import dataclass
 from typing import Any, Iterable, Sequence
 
 
-HISTORY_VERSION = 3
+HISTORY_VERSION = 4
 MAX_HISTORY_SAMPLES = 120
 
 
@@ -19,6 +19,8 @@ class ItemValueProfile:
     tier_name: str
     actionable: bool
     common: bool
+    category: str = "unknown"
+    urgency: float = 0.0
 
 
 @dataclass(frozen=True, slots=True)
@@ -39,6 +41,9 @@ class DealScore:
     item_tier_name: str = "Common"
     actionable: bool = False
     payment_tier: int = 0
+    unique_shop_count: int = 0
+    market_spread: float = 0.0
+    blueprint_penalty: bool = False
 
 
 @dataclass(frozen=True, slots=True)
@@ -47,27 +52,32 @@ class ScoredShopRow:
     deal: DealScore
 
 
-# Order is important: endgame and high-tier terms are matched before broad
-# words such as "metal", "stone", or "wood".
-_ENDGAME_TERMS = (
+# Exact normalized names are preferred over broad substring checks. This avoids
+# mistakes such as classifying "Rocket Launcher" as an endgame rocket or
+# "Stone Barricade" as ordinary Stones.
+_ENDGAME_NAMES = {
     "m249",
     "multiple grenade launcher",
     "timed explosive charge",
     "c4",
     "rocket",
+    "explosive 5.56 rifle ammo",
     "explosive 5.56",
     "incendiary rocket",
     "high velocity rocket",
     "supply signal",
-)
-_HIGH_TERMS = (
+    "hmlmg",
+}
+_HIGH_NAMES = {
     "assault rifle",
+    "lr-300 assault rifle",
     "lr-300",
     "lr300",
     "mp5a4",
     "mp5",
     "l96 rifle",
     "bolt action rifle",
+    "m39 rifle",
     "rocket launcher",
     "auto turret",
     "sam site",
@@ -75,36 +85,62 @@ _HIGH_TERMS = (
     "armored double door",
     "metal facemask",
     "metal chest plate",
-    "heavy plate",
+    "heavy plate helmet",
+    "heavy plate jacket",
+    "heavy plate pants",
     "night vision goggles",
-)
-_MID_TERMS = (
+    "spas-12 shotgun",
+    "m92 pistol",
+    "prototype 17",
+    "minigun",
+}
+_MID_EQUIPMENT_NAMES = {
     "garage door",
-    "rifle body",
-    "smg body",
-    "semi automatic body",
-    "tech trash",
-    "targeting computer",
-    "cctv camera",
     "wind turbine",
     "large rechargeable battery",
     "large battery",
     "semi-automatic rifle",
     "semi automatic rifle",
+    "semi-automatic pistol",
+    "semi automatic pistol",
     "thompson",
     "custom smg",
     "python revolver",
     "pump shotgun",
     "flame turret",
     "shotgun trap",
+    "smart switch",
+    "smart alarm",
+    "storage monitor",
+    "industrial conveyor",
+    "industrial crafter",
+    "computer station",
+    "cctv camera",
+    "targeting computer",
+}
+_RARE_COMPONENT_NAMES = {
+    "rifle body",
+    "smg body",
+    "semi automatic body",
+    "semi-automatic body",
+    "tech trash",
+    "targeting computer",
+    "cctv camera",
+}
+_COMPONENT_NAMES = {
     "gears",
     "metal pipe",
     "road signs",
     "sheet metal",
     "sewing kit",
-)
-_EARLY_TERMS = (
+    "rope",
+    "tarp",
+    "metal spring",
+    "electric fuse",
+}
+_EARLY_NAMES = {
     "revolver",
+    "double barrel shotgun",
     "double barrel",
     "waterpipe shotgun",
     "crossbow",
@@ -114,8 +150,10 @@ _EARLY_TERMS = (
     "bean can grenade",
     "small rechargeable battery",
     "medium rechargeable battery",
-)
-_COMMON_TERMS = (
+    "salvaged sword",
+    "salvaged cleaver",
+}
+_COMMON_NAMES = {
     "hunting bow",
     "compound bow",
     "wooden arrow",
@@ -141,6 +179,7 @@ _COMMON_TERMS = (
     "mushroom",
     "potato",
     "apple",
+    "chicken breast",
     "chicken",
     "wolf meat",
     "bear meat",
@@ -149,14 +188,15 @@ _COMMON_TERMS = (
     "torch",
     "camp fire",
     "campfire",
-)
+    "scrap tea",
+    "wood tea",
+    "ore tea",
+}
 
-# Payment tiers are intentionally broad. They are not exchange rates; they only
-# prevent primitive goods bought with strategically valuable resources from
-# being promoted as urgent purchases.
-_STRATEGIC_PAYMENT_TERMS = (
+_STRATEGIC_PAYMENT_NAMES = {
     "high quality metal",
     "hqm",
+    "sulfur ore",
     "sulfur",
     "gun powder",
     "gunpowder",
@@ -167,60 +207,78 @@ _STRATEGIC_PAYMENT_TERMS = (
     "cctv camera",
     "rifle body",
     "smg body",
-)
-_COMPONENT_PAYMENT_TERMS = (
-    "gears",
-    "metal pipe",
-    "road signs",
-    "sheet metal",
-    "sewing kit",
-    "rope",
-)
+    "semi automatic body",
+    "semi-automatic body",
+}
+_COMPONENT_PAYMENT_NAMES = _COMPONENT_NAMES | _RARE_COMPONENT_NAMES
 
 
 def _normalized_name(value: Any) -> str:
-    return " ".join(
+    text = " ".join(
         re.sub(r"[^a-z0-9.+-]+", " ", str(value or "").casefold()).split()
     )
-
-
-def _contains_any(text: str, terms: Sequence[str]) -> bool:
-    return any(term in text for term in terms)
+    if text.startswith("bp "):
+        text = text[3:].strip()
+    if text.endswith(" blueprint"):
+        text = text[: -len(" blueprint")].strip()
+    return text
 
 
 def item_value_profile(name: Any, item_id: Any = 0) -> ItemValueProfile:
-    """Classify whether a listing is an urgent progression purchase.
-
-    This deliberately does not attempt a universal Rust exchange-rate table.
-    Same-market price evidence remains the price model; this profile only
-    decides whether a relative bargain is important enough to call a steal.
-    """
+    """Classify strategic value without pretending unrelated barter is fungible."""
     text = _normalized_name(name)
     _ = item_id
 
-    if _contains_any(text, _ENDGAME_TERMS):
-        return ItemValueProfile(4, "Endgame", True, False)
-    if _contains_any(text, _HIGH_TERMS):
-        return ItemValueProfile(3, "High tier", True, False)
-    if _contains_any(text, _MID_TERMS):
-        return ItemValueProfile(2, "Mid tier", True, False)
-    if _contains_any(text, _EARLY_TERMS):
-        return ItemValueProfile(1, "Early progression", False, False)
-    if _contains_any(text, _COMMON_TERMS):
-        return ItemValueProfile(0, "Common / primitive", False, True)
+    if text in _ENDGAME_NAMES:
+        return ItemValueProfile(4, "Endgame", True, False, "endgame", 1.0)
+    if text in _HIGH_NAMES:
+        return ItemValueProfile(3, "High tier", True, False, "high equipment", 0.95)
+    if text in _RARE_COMPONENT_NAMES:
+        return ItemValueProfile(2, "Mid tier", True, False, "rare component", 0.88)
+    if text in _MID_EQUIPMENT_NAMES:
+        return ItemValueProfile(2, "Mid tier", True, False, "mid equipment", 0.78)
+    if text in _COMPONENT_NAMES:
+        return ItemValueProfile(2, "Mid tier", True, False, "component", 0.62)
+    if text in _EARLY_NAMES:
+        return ItemValueProfile(1, "Early progression", False, False, "early", 0.35)
+    if text in _COMMON_NAMES:
+        return ItemValueProfile(0, "Common / primitive", False, True, "common", 0.0)
 
-    # Unknown items remain visible and are price-compared, but they need very
-    # strong evidence before they can be promoted beyond GOOD VALUE.
-    return ItemValueProfile(1, "Unclassified progression", False, False)
+    # Conservative fallback: unknown goods may be ranked by relative price but
+    # cannot create urgent alerts until explicitly classified or watched.
+    return ItemValueProfile(
+        1,
+        "Unclassified progression",
+        False,
+        False,
+        "unclassified",
+        0.20,
+    )
 
 
 def payment_value_tier(name: Any) -> int:
     text = _normalized_name(name)
-    if _contains_any(text, _STRATEGIC_PAYMENT_TERMS):
+    if text in _ENDGAME_NAMES or text in _HIGH_NAMES:
+        return 3
+    if text in _STRATEGIC_PAYMENT_NAMES:
         return 2
-    if _contains_any(text, _COMPONENT_PAYMENT_TERMS):
+    if text in _COMPONENT_PAYMENT_NAMES:
         return 1
     return 0
+
+
+def _shop_identity(row: Any) -> str:
+    explicit = str(getattr(row, "shop_key", "") or "").strip()
+    if explicit:
+        return explicit
+    return "|".join(
+        (
+            str(getattr(row, "shop", "") or ""),
+            str(getattr(row, "grid", "") or ""),
+            str(getattr(row, "x", "") or ""),
+            str(getattr(row, "y", "") or ""),
+        )
+    )
 
 
 def _market_key(row: Any) -> str:
@@ -293,16 +351,29 @@ def _median_absolute_deviation(
     )
 
 
-def _confidence(peer_count: int, history_count: int) -> str:
+def _confidence(
+    peer_count: int,
+    history_count: int,
+    market_spread: float = 0.0,
+) -> str:
     if (
         peer_count >= 4
-        or history_count >= 5
-        or (peer_count >= 3 and history_count >= 2)
+        or history_count >= 6
+        or (peer_count >= 3 and history_count >= 3)
     ):
-        return "High"
-    if peer_count >= 2 or history_count >= 1:
+        level = "High"
+    elif peer_count >= 2 or history_count >= 2:
+        level = "Medium"
+    else:
+        level = "Low"
+
+    # Highly scattered markets need more history before they can support an
+    # urgent label. A volatile four-shop market is not the same as consensus.
+    if market_spread >= 0.90 and history_count < 6:
+        return "Medium" if level == "High" else "Low"
+    if market_spread >= 0.55 and level == "High" and history_count < 3:
         return "Medium"
-    return "Low"
+    return level
 
 
 def _benchmark(
@@ -345,96 +416,105 @@ def _progression_gate(
     anomaly_score: float,
     item_profile: ItemValueProfile,
     payment_tier: int,
+    market_spread: float,
+    is_blueprint: bool,
 ) -> tuple[int, str, str]:
-    """Convert relative cheapness into a useful, progression-aware rating."""
+    """Convert relative cheapness into a conservative strategic rating."""
     score = int(round(max(0.0, min(100.0, numeric_score))))
     evidence_count = peer_count + min(history_count, 6)
     top_rank = peer_rank == 1
+    medium_evidence = confidence in {"Medium", "High"} and evidence_count >= 3
     strong_evidence = (
         confidence == "High"
-        or (confidence == "Medium" and evidence_count >= 4)
+        and evidence_count >= 4
     )
 
-    # Primitive and common offers can be cheap relative to their peers without
-    # being strategically urgent. This directly blocks hunting bows, wood,
-    # stones, and similar goods from STEAL/CAN'T MISS.
     if item_profile.tier == 0:
-        # A relative discount on primitive/common goods is useful context, but
-        # it is not a strategically meaningful marketplace deal.
         score = min(score, 58)
         if discount <= -0.22:
             return min(score, 28), "OVERPRICED", ""
         return score, "FAIR", ""
 
-    # Early or unknown progression goods may be useful, but are never an
-    # automatic buy based only on marketplace statistics.
     if item_profile.tier == 1:
         score = min(score, 74)
-        if discount >= 0.14 and confidence != "Low":
+        if discount >= 0.18 and confidence != "Low":
             return score, "GOOD VALUE", ""
         if discount <= -0.22:
             return min(score, 28), "OVERPRICED", ""
         return score, "FAIR", ""
 
-    # Paying a strategic currency for a merely mid-tier item needs stronger
-    # proof. This does not ban the trade; it raises the urgent-buy threshold.
-    strategic_payment_penalty = (
-        0.07
-        if payment_tier >= 2 and item_profile.tier == 2
-        else 0.0
+    payment_burden = max(0, payment_tier - item_profile.tier)
+    blueprint_penalty = 0.10 if is_blueprint else 0.0
+    payment_penalty = 0.08 * payment_burden
+    volatility_penalty = min(0.12, max(0.0, market_spread - 0.20) * 0.08)
+    effective_discount = (
+        discount
+        - blueprint_penalty
+        - payment_penalty
+        - volatility_penalty
     )
-    effective_discount = discount - strategic_payment_penalty
 
-    extreme_outlier = (
-        anomaly_score >= 2.5
-        and discount >= 0.50
-        and top_rank
-        and strong_evidence
-    )
+    if item_profile.category == "component":
+        steal_threshold = 0.44
+    elif item_profile.category == "rare component":
+        steal_threshold = 0.34
+    elif item_profile.tier == 2:
+        steal_threshold = 0.38
+    elif item_profile.tier == 3:
+        steal_threshold = 0.25
+    else:
+        steal_threshold = 0.18
 
     if item_profile.tier >= 4:
         if (
-            effective_discount >= 0.34
-            and score >= 90
+            effective_discount >= 0.36
+            and score >= 91
             and top_rank
             and strong_evidence
+            and market_spread < 1.20
         ):
             return score, "CAN'T MISS", "deal"
         if (
-            effective_discount >= 0.18
-            and score >= 80
+            effective_discount >= steal_threshold
+            and score >= 82
             and top_rank
-            and confidence != "Low"
-        ) or extreme_outlier:
+            and medium_evidence
+        ):
             return max(score, 82), "STEAL", "deal"
     elif item_profile.tier == 3:
         if (
-            effective_discount >= 0.42
-            and score >= 92
+            not is_blueprint
+            and effective_discount >= 0.48
+            and score >= 93
             and top_rank
             and strong_evidence
+            and market_spread < 1.00
         ):
             return score, "CAN'T MISS", "deal"
         if (
-            effective_discount >= 0.24
+            effective_discount >= steal_threshold
             and score >= 84
             and top_rank
-            and confidence != "Low"
-        ) or extreme_outlier:
+            and medium_evidence
+        ):
             return max(score, 84), "STEAL", "deal"
     else:
         if (
-            effective_discount >= 0.34
+            effective_discount >= steal_threshold
             and score >= 87
             and top_rank
             and strong_evidence
-        ) or (
-            extreme_outlier
-            and effective_discount >= 0.28
+            and anomaly_score >= 1.0
         ):
             return max(score, 87), "STEAL", "deal"
 
-    if effective_discount >= 0.10 and confidence != "Low":
+    good_value_threshold = (
+        0.12
+        + blueprint_penalty / 2
+        + payment_penalty / 2
+        + volatility_penalty / 2
+    )
+    if effective_discount >= good_value_threshold and confidence != "Low":
         return min(score, 79), "GOOD VALUE", ""
     if discount <= -0.22:
         return min(score, 28), "OVERPRICED", ""
@@ -454,6 +534,8 @@ def _reason(
     item_profile: ItemValueProfile,
     payment_tier: int,
     label: str,
+    market_spread: float,
+    is_blueprint: bool,
 ) -> str:
     if discount > 0.005:
         direction = f"{round(discount * 100):.0f}% below"
@@ -476,10 +558,12 @@ def _reason(
         )
     )
     payment_text = (
-        "; strategically valuable payment requested"
-        if payment_tier >= 2
+        f"; payment burden tier {payment_tier}"
+        if payment_tier > 0
         else ""
     )
+    blueprint_text = "; blueprint listing" if is_blueprint else ""
+    spread_text = f"; market spread {market_spread:.2f}"
     anomaly_text = (
         f"; robust outlier score {anomaly_score:.1f}"
         if anomaly_score >= 1.5
@@ -494,7 +578,8 @@ def _reason(
         f"{direction} the {benchmark_source}; {rank_text}; "
         f"{history_count} historical sample(s); "
         f"{confidence.lower()} confidence; stock {stock}; "
-        f"{progression}{payment_text}{anomaly_text}{cap_text}."
+        f"{progression}{payment_text}{blueprint_text}{spread_text}"
+        f"{anomaly_text}{cap_text}."
     )
 
 
@@ -508,14 +593,20 @@ def score_shop_rows(
         for key, values in normalized_history["prices"].items()
     }
 
-    current_groups: dict[str, list[float]] = {}
+    current_shop_prices: dict[str, dict[str, float]] = {}
     for row in rows:
         if int(getattr(row, "stock", 0) or 0) <= 0:
             continue
-        current_groups.setdefault(
-            _market_key(row),
-            [],
-        ).append(_unit_cost(row))
+        market = _market_key(row)
+        shop = _shop_identity(row)
+        unit = _unit_cost(row)
+        shops = current_shop_prices.setdefault(market, {})
+        shops[shop] = min(unit, shops.get(shop, unit))
+
+    current_groups: dict[str, list[float]] = {
+        key: list(shop_prices.values())
+        for key, shop_prices in current_shop_prices.items()
+    }
 
     scored: list[ScoredShopRow] = []
     for row in rows:
@@ -535,20 +626,13 @@ def score_shop_rows(
             getattr(row, "currency_name", "")
         )
 
-        live_peers = list(current)
-        if stock > 0 and len(live_peers) > 1:
-            removed = False
-            without_self: list[float] = []
-            for value in live_peers:
-                if (
-                    not removed
-                    and abs(value - unit_cost) <= 1e-9
-                ):
-                    removed = True
-                    continue
-                without_self.append(value)
-            if without_self:
-                live_peers = without_self
+        own_shop = _shop_identity(row)
+        shop_prices = current_shop_prices.get(key, {})
+        live_peers = [
+            price
+            for shop, price in shop_prices.items()
+            if shop != own_shop
+        ]
 
         benchmark, benchmark_source = _benchmark(
             live_peers,
@@ -557,10 +641,6 @@ def score_shop_rows(
         )
         peer_count = len(current)
         history_count = len(historical)
-        confidence = _confidence(
-            peer_count,
-            history_count,
-        )
         discount = (
             (benchmark - unit_cost) / benchmark
             if benchmark > 0
@@ -587,6 +667,16 @@ def score_shop_rows(
         mad = _median_absolute_deviation(
             spread_samples,
             spread_median,
+        )
+        market_spread = (
+            mad / spread_median
+            if spread_median > 1e-9
+            else 0.0
+        )
+        confidence = _confidence(
+            peer_count,
+            history_count,
+            market_spread,
         )
         if mad > 1e-9:
             anomaly_score = max(
@@ -632,6 +722,10 @@ def score_shop_rows(
                 anomaly_score=anomaly_score,
                 item_profile=item_profile,
                 payment_tier=payment_tier,
+                market_spread=market_spread,
+                is_blueprint=bool(
+                    getattr(row, "item_is_blueprint", False)
+                ),
             )
 
         if stock <= 0:
@@ -671,12 +765,21 @@ def score_shop_rows(
                         item_profile=item_profile,
                         payment_tier=payment_tier,
                         label=label,
+                        market_spread=market_spread,
+                        is_blueprint=bool(
+                            getattr(row, "item_is_blueprint", False)
+                        ),
                     ),
                     alert_level=alert_level,
                     item_tier=item_profile.tier,
                     item_tier_name=item_profile.tier_name,
                     actionable=item_profile.actionable,
                     payment_tier=payment_tier,
+                    unique_shop_count=peer_count,
+                    market_spread=round(market_spread, 4),
+                    blueprint_penalty=bool(
+                        getattr(row, "item_is_blueprint", False)
+                    ),
                 ),
             )
         )
