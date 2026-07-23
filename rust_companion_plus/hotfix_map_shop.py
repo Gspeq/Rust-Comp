@@ -3,22 +3,38 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import sys
+import threading
+import time
+import traceback
 from dataclasses import replace
 from pathlib import Path
 from tkinter import messagebox
-from typing import Any, Iterable, Sequence
+from typing import Any, Callable, Iterable, Sequence
 
+import customtkinter as ctk
 from PIL import Image, ImageChops, ImageDraw, ImageFilter, ImageOps
 
 from rust_companion_plus.config import APP_DATA_DIR
+from rust_companion_plus.services.deal_notifications import (
+    DealAlert,
+    NOTIFICATION_SETTINGS_KEY,
+    normalize_notification_settings,
+)
+from rust_companion_plus.services.rustplus_client import ServerSnapshot
 from rust_companion_plus.services import builtin_map_analyzer as _builtin_map_analyzer
 from rust_companion_plus.services import resource_heatmaps as _resource_heatmaps
 from rust_companion_plus.services import shop_value as _shop_value
 from rust_companion_plus.services.resource_heatmaps import grid_reference
+from rust_companion_plus.ui import common as _ui_common
+from rust_companion_plus.ui.notifications import show_windows_notification
 from rust_companion_plus.ui.tabs import map_enhanced as _map_enhanced
+from rust_companion_plus.ui.tabs import map_tab as _map_tab
+from rust_companion_plus.ui.tabs import shops as _shops_base
+from rust_companion_plus.ui.tabs import shops_enhanced as _shops_enhanced
 
 
-HOTFIX_ID = "MAP_LAYERS_AND_STRATEGIC_VALUE_V2"
+HOTFIX_ID = "MAP_CLICK_DRONE_SHOPS_ERROR_NOTIFICATIONS_V3"
 MARKER_HIT_RADIUS_PX = 34.0
 CLICK_DRAG_THRESHOLD_PX = 7.0
 HEATMAP_RENDER_OPACITY = 0.72
@@ -887,11 +903,516 @@ class ClickableServerMarkerMapTab(_OriginalMapTab):
         )
 
 
+
+
+DRONE_FILTER_HELP = (
+    "Shows player-owned broadcast vending used by the Drone Marketplace. "
+    "Rust+ does not expose whether the same shop also has safe walk-up access."
+)
+ERROR_REPEAT_SECONDS = 600
+ERROR_NOTIFICATION_STORE_KEY = "app_error_notifications_seen_v1"
+_ERROR_LAST_SENT: dict[str, float] = {}
+_ERROR_LOCK = threading.Lock()
+_ACTIVE_APP: Any = None
+
+
+def _as_positive_int(value: Any) -> int:
+    try:
+        return max(0, int(value or 0))
+    except (TypeError, ValueError):
+        return 0
+
+
+def _marker_type(marker: Any) -> int:
+    if not isinstance(marker, dict):
+        return 0
+    try:
+        return int(marker.get("type", 0) or 0)
+    except (TypeError, ValueError):
+        return 0
+
+
+def _explicit_true(value: Any) -> bool:
+    if isinstance(value, bool):
+        return value
+    if isinstance(value, (int, float)):
+        return value != 0
+    return str(value or "").strip().casefold() in {
+        "1", "true", "yes", "on", "drone", "drone-only", "drone only"
+    }
+
+
+def is_drone_marketplace_marker(marker: Any) -> bool:
+    """Return whether a Rust+ vending marker is a Drone Marketplace candidate.
+
+    Player-owned broadcast vending machines carry a non-zero owner Steam ID in
+    Rust+ marker payloads. Explicit drone flags are accepted for imported or
+    future payloads. This intentionally does not claim that walk-up access is
+    impossible because the companion protocol does not expose building access.
+    """
+    if not isinstance(marker, dict):
+        return False
+    marker_type = _marker_type(marker)
+    if marker_type != 3 and not marker.get("sell_orders"):
+        return False
+
+    for key in (
+        "drone_only",
+        "is_drone_only",
+        "drone_accessible",
+        "is_drone_accessible",
+        "delivery_only",
+        "marketplace_only",
+    ):
+        if key in marker and _explicit_true(marker.get(key)):
+            return True
+
+    name = " ".join(str(marker.get("name") or "").casefold().split())
+    if any(
+        token in name
+        for token in (
+            "drone only",
+            "drone-only",
+            "drone shop",
+            "drone delivery",
+            "[drone]",
+        )
+    ):
+        return True
+
+    return _as_positive_int(marker.get("steam_id")) > 0
+
+
+def filter_drone_marketplace_markers(
+    markers: Iterable[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    return [
+        dict(marker)
+        for marker in markers
+        if is_drone_marketplace_marker(marker)
+    ]
+
+
+_OriginalShopsTab = getattr(
+    _shops_enhanced,
+    "_drone_filter_original_class",
+    _shops_enhanced.ShopsTab,
+)
+
+
+class DroneMarketplaceShopsTab(_OriginalShopsTab):
+    """Enhanced shop tab with a Drone Marketplace-only view."""
+
+    def __init__(self, master: Any, context: Any):
+        self.drone_marketplace_only = ctk.BooleanVar(value=False)
+        self._drone_marker_count = 0
+        self._all_vending_marker_count = 0
+        super().__init__(master, context)
+
+    def _build_filter_bar(self) -> None:
+        super()._build_filter_bar()
+        try:
+            self.filter_tabs.configure(height=126)
+        except Exception:
+            pass
+        simple = self.filter_tabs.tab("Simple")
+        self.drone_marketplace_checkbox = ctk.CTkCheckBox(
+            simple,
+            text="Drone Marketplace shops only",
+            variable=self.drone_marketplace_only,
+            command=self._drone_filter_changed,
+        )
+        self.drone_marketplace_checkbox.grid(
+            row=1,
+            column=0,
+            columnspan=2,
+            sticky="w",
+            padx=(12, 8),
+            pady=(0, 9),
+        )
+        self.drone_marketplace_hint = ctk.CTkLabel(
+            simple,
+            text=DRONE_FILTER_HELP,
+            text_color=("#64748b", "#94a3b8"),
+            anchor="w",
+            justify="left",
+            wraplength=570,
+            font=ctk.CTkFont(size=10),
+        )
+        self.drone_marketplace_hint.grid(
+            row=1,
+            column=2,
+            columnspan=2,
+            sticky="ew",
+            padx=(8, 12),
+            pady=(0, 9),
+        )
+
+    def _drone_filter_changed(self) -> None:
+        self._raw_signature = None
+        self._scored_rows = []
+        self._last_requested_sort = ""
+        self.refresh()
+
+    def clear_filters(self) -> None:
+        self.drone_marketplace_only.set(False)
+        self._raw_signature = None
+        self._scored_rows = []
+        super().clear_filters()
+
+    def refresh(self) -> None:
+        snapshot = getattr(self.context, "snapshot", None)
+        if snapshot is None or not bool(self.drone_marketplace_only.get()):
+            self._drone_marker_count = 0
+            self._all_vending_marker_count = sum(
+                1
+                for marker in (getattr(snapshot, "markers", None) or [])
+                if isinstance(marker, dict)
+                and _marker_type(marker) == 3
+            )
+            super().refresh()
+            return
+
+        original_markers = [
+            dict(marker)
+            for marker in (getattr(snapshot, "markers", None) or [])
+            if isinstance(marker, dict)
+        ]
+        filtered_markers = filter_drone_marketplace_markers(original_markers)
+        self._all_vending_marker_count = sum(
+            1
+            for marker in original_markers
+            if _marker_type(marker) == 3
+        )
+        self._drone_marker_count = len(filtered_markers)
+        proxy = ServerSnapshot(
+            server=dict(getattr(snapshot, "server", {}) or {}),
+            team=[dict(row) for row in (getattr(snapshot, "team", None) or [])],
+            markers=filtered_markers,
+            server_time=str(getattr(snapshot, "server_time", "") or ""),
+        )
+        self.context.snapshot = proxy
+        try:
+            super().refresh()
+        finally:
+            self.context.snapshot = snapshot
+
+    def _render_scored_rows(self, map_size: int) -> None:
+        super()._render_scored_rows(map_size)
+        if not bool(self.drone_marketplace_only.get()):
+            return
+        base_status = str(self.status.cget("text") or "")
+        self.status.configure(
+            text=(
+                f"{base_status} · Drone Marketplace candidates: "
+                f"{self._drone_marker_count}/{self._all_vending_marker_count} "
+                "broadcast vending marker(s)."
+            )
+        )
+
+
+def _error_text(error: Any) -> str:
+    if isinstance(error, BaseException):
+        text = str(error).strip()
+        return text or type(error).__name__
+    return str(error or "").strip()
+
+
+def is_relevant_app_error(category: Any, error: Any) -> bool:
+    if isinstance(error, (KeyboardInterrupt, SystemExit)):
+        return False
+    text = " ".join(_error_text(error).casefold().split())
+    if not text:
+        return False
+    expected = (
+        "operation cancelled",
+        "operation canceled",
+        "user cancelled",
+        "user canceled",
+        "no saved analyzed map is available",
+        "no active server profile",
+        "complete the rust+ credentials",
+        "profile incomplete",
+        "rust process is not running",
+        "rust is not running",
+    )
+    if any(fragment in text for fragment in expected):
+        return False
+    category_text = " ".join(str(category or "Application").split())
+    return bool(category_text)
+
+
+def _find_app(owner: Any) -> Any:
+    if owner is not None:
+        context = getattr(owner, "context", None)
+        candidate = getattr(context, "app", None)
+        if candidate is not None:
+            return candidate
+        if hasattr(owner, "deal_notifications") and hasattr(owner, "context"):
+            return owner
+        try:
+            top = owner.winfo_toplevel()
+        except Exception:
+            top = None
+        if top is not None and hasattr(top, "deal_notifications"):
+            return top
+    return _ACTIVE_APP
+
+
+def _error_fingerprint(category: str, message: str) -> str:
+    return hashlib.sha1(
+        f"{category.casefold()}|{message.casefold()}".encode("utf-8", errors="replace")
+    ).hexdigest()
+
+
+def publish_relevant_app_error(
+    owner: Any,
+    category: Any,
+    error: Any,
+    *,
+    traceback_text: str = "",
+) -> bool:
+    """Notify once per relevant error signature during a cooldown window."""
+    category_text = " ".join(str(category or "Application").split())[:80]
+    message = " ".join(_error_text(error).replace("\x00", "").split())[:320]
+    if not is_relevant_app_error(category_text, error):
+        return False
+
+    fingerprint = _error_fingerprint(category_text, message)
+    now = time.monotonic()
+    with _ERROR_LOCK:
+        previous = _ERROR_LAST_SENT.get(fingerprint, 0.0)
+        if previous and now - previous < ERROR_REPEAT_SECONDS:
+            return False
+        _ERROR_LAST_SENT[fingerprint] = now
+
+    alert = DealAlert(
+        fingerprint=f"app-error:{fingerprint}",
+        severity=3,
+        title=f"Rust Companion+ error · {category_text}"[:90],
+        message=(
+            f"{message}. The error was recorded in the app timeline and log."
+            if not message.endswith((".", "!", "?"))
+            else f"{message} The error was recorded in the app timeline and log."
+        )[:500],
+        label="APP ERROR",
+        score=100,
+        grid="",
+        shop=category_text,
+        item_name="",
+    )
+
+    app = _find_app(owner)
+    delivered = False
+
+    def deliver_through_app() -> None:
+        context = getattr(app, "context", None)
+        if context is not None:
+            try:
+                context.record_event(
+                    "APP ERROR",
+                    f"{category_text}: {message}",
+                    "error",
+                )
+            except Exception:
+                pass
+            store = getattr(context, "store", None)
+            if store is not None:
+                try:
+                    seen = dict(store.get(ERROR_NOTIFICATION_STORE_KEY, {}) or {})
+                    seen[fingerprint] = int(time.time())
+                    if len(seen) > 200:
+                        seen = dict(list(seen.items())[-200:])
+                    store.set(ERROR_NOTIFICATION_STORE_KEY, seen)
+                except Exception:
+                    pass
+
+        raw_settings = (
+            context.store.get(NOTIFICATION_SETTINGS_KEY, {})
+            if context is not None and getattr(context, "store", None) is not None
+            else {}
+        )
+        settings = normalize_notification_settings(raw_settings)
+        settings["enabled"] = True
+        settings["windows_notifications"] = True
+        settings["in_app_notifications"] = True
+        settings["popup_seconds"] = max(12, int(settings.get("popup_seconds", 15)))
+        app.deal_notifications.publish(
+            [alert],
+            settings=settings,
+            on_action=(
+                (lambda: app.show_tab("Overview"))
+                if callable(getattr(app, "show_tab", None))
+                else None
+            ),
+            action_label="Open Overview",
+            force=True,
+        )
+
+    if app is not None:
+        try:
+            if threading.current_thread() is threading.main_thread():
+                deliver_through_app()
+            else:
+                # Tk operations must be marshalled back to the UI thread.
+                app.after(0, deliver_through_app)
+            delivered = True
+        except Exception:
+            delivered = False
+
+    if not delivered:
+        delivered = show_windows_notification(
+            [alert],
+            seconds=15,
+            sound=True,
+        )
+
+    if traceback_text:
+        try:
+            sys.stderr.write(traceback_text.rstrip() + "\n")
+        except Exception:
+            pass
+    return delivered
+
+
+_ORIGINAL_RUN_IN_WORKER = getattr(
+    _ui_common,
+    "_error_notification_original_run_in_worker",
+    _ui_common.run_in_worker,
+)
+
+
+def run_in_worker_with_error_notifications(
+    owner: Any,
+    work: Callable[[], Any],
+    on_success: Callable[[Any], None],
+    on_error: Callable[[Exception], None] | None = None,
+) -> None:
+    def notified_error(error: Exception) -> None:
+        label = getattr(work, "__name__", "Background worker").replace("_", " ")
+        publish_relevant_app_error(owner, label, error)
+        if on_error is not None:
+            on_error(error)
+        else:
+            messagebox.showerror("Rust Companion+", str(error), parent=owner)
+
+    _ORIGINAL_RUN_IN_WORKER(owner, work, on_success, notified_error)
+
+
+def _install_process_error_hooks() -> None:
+    if not getattr(sys, "_rust_companion_error_hook_v3", False):
+        original_sys_hook = sys.excepthook
+
+        def sys_hook(exc_type: type[BaseException], exc: BaseException, tb: Any) -> None:
+            formatted = "".join(traceback.format_exception(exc_type, exc, tb))
+            publish_relevant_app_error(
+                None,
+                "Unhandled application error",
+                exc,
+                traceback_text=formatted,
+            )
+            original_sys_hook(exc_type, exc, tb)
+
+        sys.excepthook = sys_hook
+        sys._rust_companion_error_hook_v3 = True
+
+    if hasattr(threading, "excepthook") and not getattr(
+        threading, "_rust_companion_error_hook_v3", False
+    ):
+        original_thread_hook = threading.excepthook
+
+        def thread_hook(args: Any) -> None:
+            exc = getattr(args, "exc_value", None)
+            exc_type = getattr(args, "exc_type", type(exc))
+            tb = getattr(args, "exc_traceback", None)
+            formatted = "".join(traceback.format_exception(exc_type, exc, tb))
+            publish_relevant_app_error(
+                None,
+                "Unhandled background thread",
+                exc,
+                traceback_text=formatted,
+            )
+            original_thread_hook(args)
+
+        threading.excepthook = thread_hook
+        threading._rust_companion_error_hook_v3 = True
+
+
 _shop_value._strategic_reference_original_score_shop_rows = _ORIGINAL_SCORE_SHOP_ROWS
 _shop_value.score_shop_rows = score_shop_rows_with_strategic_references
 _shop_value._strategic_reference_hotfix_installed = True
+_shops_enhanced.score_shop_rows = score_shop_rows_with_strategic_references
 
 _map_enhanced._map_layers_original_class = _OriginalMapTab
 _map_enhanced.MapTab = ClickableServerMarkerMapTab
 _map_enhanced._marker_click_hotfix_installed = True
 _map_enhanced._map_layers_hotfix_installed = HOTFIX_ID
+
+_shops_enhanced._drone_filter_original_class = _OriginalShopsTab
+_shops_enhanced.ShopsTab = DroneMarketplaceShopsTab
+_shops_enhanced._drone_filter_hotfix_installed = HOTFIX_ID
+
+_ui_common._error_notification_original_run_in_worker = _ORIGINAL_RUN_IN_WORKER
+_ui_common.run_in_worker = run_in_worker_with_error_notifications
+for _module in (_map_enhanced, _map_tab, _shops_base, _shops_enhanced):
+    if hasattr(_module, "run_in_worker"):
+        _module.run_in_worker = run_in_worker_with_error_notifications
+
+_install_process_error_hooks()
+
+# Import after map/shop patching so app.py binds the replacement classes.
+from rust_companion_plus import app as _app  # noqa: E402
+
+_OriginalAppInit = getattr(
+    _app.RustCompanionApp,
+    "_error_notification_original_init",
+    _app.RustCompanionApp.__init__,
+)
+_OriginalAppBackground = getattr(
+    _app.RustCompanionApp,
+    "_error_notification_original_background",
+    _app.RustCompanionApp._background,
+)
+
+
+def _app_init_with_error_notifications(self: Any, *args: Any, **kwargs: Any) -> None:
+    global _ACTIVE_APP
+    _OriginalAppInit(self, *args, **kwargs)
+    _ACTIVE_APP = self
+
+
+def _app_background_with_error_notifications(
+    self: Any,
+    work: Callable[[], Any],
+    success: Callable[[Any], None],
+    failure: Callable[[Exception], None],
+) -> None:
+    def notified_failure(error: Exception) -> None:
+        label = getattr(work, "__name__", "Background refresh").replace("_", " ")
+        publish_relevant_app_error(self, label, error)
+        failure(error)
+
+    _OriginalAppBackground(self, work, success, notified_failure)
+
+
+def _report_callback_exception(
+    self: Any,
+    exc_type: type[BaseException],
+    exc: BaseException,
+    tb: Any,
+) -> None:
+    formatted = "".join(traceback.format_exception(exc_type, exc, tb))
+    publish_relevant_app_error(
+        self,
+        "User interface callback",
+        exc,
+        traceback_text=formatted,
+    )
+
+
+_app.RustCompanionApp._error_notification_original_init = _OriginalAppInit
+_app.RustCompanionApp._error_notification_original_background = _OriginalAppBackground
+_app.RustCompanionApp.__init__ = _app_init_with_error_notifications
+_app.RustCompanionApp._background = _app_background_with_error_notifications
+_app.RustCompanionApp.report_callback_exception = _report_callback_exception
+_app.RustCompanionApp._error_notification_hotfix_installed = HOTFIX_ID

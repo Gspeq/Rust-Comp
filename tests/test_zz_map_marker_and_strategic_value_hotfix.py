@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import tempfile
 import unittest
+from unittest import mock
 from dataclasses import dataclass
 from pathlib import Path
 from types import SimpleNamespace
@@ -176,6 +177,127 @@ class MapMarkerHitTestingHotfixTests(unittest.TestCase):
         self.assertIsNone(hit)
 
 
+
+class DroneMarketplaceFilterHotfixTests(unittest.TestCase):
+    def test_player_owned_vending_is_a_drone_marketplace_candidate(self) -> None:
+        marker = {
+            "type": 3,
+            "steam_id": 76561198000000000,
+            "name": "Sulfur for Scrap",
+            "sell_orders": [{"item_id": 1}],
+        }
+        self.assertTrue(hotfix.is_drone_marketplace_marker(marker))
+
+    def test_npc_vending_without_owner_is_not_in_drone_only_view(self) -> None:
+        marker = {
+            "type": 3,
+            "steam_id": 0,
+            "name": "Outpost Components",
+            "sell_orders": [{"item_id": 1}],
+        }
+        self.assertFalse(hotfix.is_drone_marketplace_marker(marker))
+
+    def test_explicit_drone_flag_is_supported(self) -> None:
+        marker = {
+            "type": 3,
+            "steam_id": 0,
+            "drone_only": True,
+            "sell_orders": [{"item_id": 1}],
+        }
+        self.assertTrue(hotfix.is_drone_marketplace_marker(marker))
+
+    def test_filter_keeps_only_drone_marketplace_markers(self) -> None:
+        markers = [
+            {"id": "player", "type": 3, "steam_id": 123, "sell_orders": [{}]},
+            {"id": "npc", "type": 3, "steam_id": 0, "sell_orders": [{}]},
+            {"id": "event", "type": 8, "steam_id": 123},
+        ]
+        filtered = hotfix.filter_drone_marketplace_markers(markers)
+        self.assertEqual(["player"], [row["id"] for row in filtered])
+
+
+class AppErrorNotificationHotfixTests(unittest.TestCase):
+    def setUp(self) -> None:
+        hotfix._ERROR_LAST_SENT.clear()
+
+    def test_relevant_errors_are_selected(self) -> None:
+        self.assertTrue(
+            hotfix.is_relevant_app_error(
+                "Map analysis",
+                RuntimeError("Parser crashed while loading the current map"),
+            )
+        )
+        self.assertFalse(
+            hotfix.is_relevant_app_error(
+                "Pairing",
+                RuntimeError("Complete the Rust+ credentials first"),
+            )
+        )
+
+    def test_identical_error_is_not_spammed_during_cooldown(self) -> None:
+        with mock.patch.object(
+            hotfix,
+            "show_windows_notification",
+            return_value=True,
+        ) as native:
+            first = hotfix.publish_relevant_app_error(
+                None,
+                "Map refresh",
+                RuntimeError("Map parser failed"),
+            )
+            second = hotfix.publish_relevant_app_error(
+                None,
+                "Map refresh",
+                RuntimeError("Map parser failed"),
+            )
+        self.assertTrue(first)
+        self.assertFalse(second)
+        native.assert_called_once()
+
+    def test_background_thread_error_is_marshaled_to_tk_thread(self) -> None:
+        callbacks = []
+        published = []
+
+        class Store:
+            def __init__(self) -> None:
+                self.values = {}
+
+            def get(self, key, default=None):
+                return self.values.get(key, default)
+
+            def set(self, key, value) -> None:
+                self.values[key] = value
+
+        context = SimpleNamespace(
+            store=Store(),
+            record_event=lambda *args: None,
+        )
+        app = SimpleNamespace(
+            context=context,
+            deal_notifications=SimpleNamespace(
+                publish=lambda *args, **kwargs: published.append((args, kwargs))
+            ),
+            after=lambda _delay, callback: callbacks.append(callback),
+            show_tab=lambda _name: None,
+        )
+        worker = object()
+        main = object()
+        with mock.patch.object(hotfix.threading, "current_thread", return_value=worker), mock.patch.object(
+            hotfix.threading, "main_thread", return_value=main
+        ):
+            delivered = hotfix.publish_relevant_app_error(
+                app,
+                "Background sync",
+                RuntimeError("Socket worker crashed"),
+            )
+
+        self.assertTrue(delivered)
+        self.assertEqual(1, len(callbacks))
+        self.assertEqual([], published)
+        callbacks[0]()
+        self.assertEqual(1, len(published))
+
+
 class HotfixActivationContractTests(unittest.TestCase):
     def test_central_bootstrap_activates_hotfix_before_gui_import(self) -> None:
         root = Path(__file__).resolve().parents[1]
@@ -196,6 +318,34 @@ class HotfixActivationContractTests(unittest.TestCase):
         self.assertEqual(
             hotfix.HOTFIX_ID,
             map_enhanced._map_layers_hotfix_installed,
+        )
+
+    def test_hotfix_replaces_enhanced_shop_class(self) -> None:
+        from rust_companion_plus.ui.tabs import shops_enhanced
+
+        self.assertIs(
+            shops_enhanced.ShopsTab,
+            hotfix.DroneMarketplaceShopsTab,
+        )
+        self.assertEqual(
+            hotfix.HOTFIX_ID,
+            shops_enhanced._drone_filter_hotfix_installed,
+        )
+
+    def test_enhanced_shop_scoring_uses_strategic_wrapper(self) -> None:
+        from rust_companion_plus.ui.tabs import shops_enhanced
+
+        self.assertIs(
+            shops_enhanced.score_shop_rows,
+            hotfix.score_shop_rows_with_strategic_references,
+        )
+
+    def test_app_error_hook_is_installed(self) -> None:
+        from rust_companion_plus import app
+
+        self.assertEqual(
+            hotfix.HOTFIX_ID,
+            app.RustCompanionApp._error_notification_hotfix_installed,
         )
 
 
