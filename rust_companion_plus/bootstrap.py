@@ -46,6 +46,8 @@ from rust_companion_plus.services.bootstrap_health import (
 # Both launcher.py and main.py converge here, so the runtime patch is
 # installed once before launch_gui imports rust_companion_plus.app.
 import rust_companion_plus.hotfix_map_shop  # noqa: F401
+# MAP_INTERACTION_STARTER_HOTFIX_V4
+import rust_companion_plus.hotfix_map_interaction_v4  # noqa: F401
 
 LAUNCHER_SETUP_VERSION = 3
 RESET = "\033[0m"
