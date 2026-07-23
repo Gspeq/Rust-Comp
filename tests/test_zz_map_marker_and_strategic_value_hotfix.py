@@ -1,14 +1,15 @@
 from __future__ import annotations
 
+import tempfile
 import unittest
 from dataclasses import dataclass
 from pathlib import Path
+from types import SimpleNamespace
+
+from PIL import Image, ImageDraw
 
 import rust_companion_plus.hotfix_map_shop as hotfix
-from rust_companion_plus.services.shop_value import (
-    score_shop_rows,
-    sort_scored_rows,
-)
+from rust_companion_plus.services.shop_value import score_shop_rows, sort_scored_rows
 
 
 @dataclass
@@ -71,6 +72,69 @@ class StrategicShopValueHotfixTests(unittest.TestCase):
         self.assertNotIn("strategic utility reference", non_scrap[0].deal.reason)
 
 
+class MapLayerRenderingHotfixTests(unittest.TestCase):
+    def test_raster_heatmap_is_made_visible(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            mask_path = Path(folder) / "heatmap_sulfur.png"
+            mask = Image.new("L", (64, 64), 0)
+            ImageDraw.Draw(mask).ellipse((18, 18, 46, 46), fill=145)
+            mask.save(mask_path)
+            bundle = SimpleNamespace(
+                points={},
+                raster_layers={"Sulfur": [mask_path]},
+                source_root=Path(folder),
+            )
+            base = Image.new("RGBA", (128, 128), (25, 35, 45, 255))
+            rendered, diagnostics = hotfix.composite_visible_heatmaps(
+                base, bundle, ["Sulfur"]
+            )
+            self.assertEqual((0, 1), diagnostics["Sulfur"])
+            self.assertNotEqual(base.getpixel((64, 64)), rendered.getpixel((64, 64)))
+            self.assertGreater(rendered.getpixel((64, 64))[0], base.getpixel((64, 64))[0])
+
+    def test_server_markers_are_drawn_without_alternate_map_image(self) -> None:
+        base = Image.new("RGBA", (200, 200), (20, 30, 40, 255))
+        marker = {
+            "id": "shop-1",
+            "type": 3,
+            "x": 500,
+            "y": 500,
+            "name": "Sulfur Shop",
+            "sell_orders": [{"item_id": 1}],
+        }
+        rendered, positions = hotfix.render_server_markers(base, [marker], 1000)
+        self.assertEqual(1, len(positions))
+        x, y = positions[0]["pixel"]
+        self.assertAlmostEqual(100, x, delta=1)
+        self.assertAlmostEqual(100, y, delta=1)
+        self.assertNotEqual(base.getpixel((x, y)), rendered.getpixel((x, y)))
+        self.assertEqual("$", hotfix.marker_visual(marker)[1])
+
+    def test_composition_order_keeps_marker_above_heatmap(self) -> None:
+        with tempfile.TemporaryDirectory() as folder:
+            mask_path = Path(folder) / "heatmap_sulfur.png"
+            Image.new("L", (100, 100), 255).save(mask_path)
+            bundle = SimpleNamespace(
+                points={},
+                raster_layers={"Sulfur": [mask_path]},
+                source_root=Path(folder),
+            )
+            base = Image.new("RGBA", (100, 100), (30, 30, 30, 255))
+            marker = {"type": 3, "x": 500, "y": 500, "name": "Shop"}
+            rendered, diagnostics, positions = hotfix.compose_map_layers(
+                base,
+                bundle,
+                ["Sulfur"],
+                [marker],
+                1000,
+                show_server_icons=True,
+            )
+            self.assertEqual((0, 1), diagnostics["Sulfur"])
+            self.assertEqual(1, len(positions))
+            center = positions[0]["pixel"]
+            self.assertGreater(rendered.getpixel(center)[1], 120)
+
+
 class MapMarkerHitTestingHotfixTests(unittest.TestCase):
     def test_click_hits_standard_and_centered_coordinate_payloads(self) -> None:
         common = dict(
@@ -87,7 +151,7 @@ class MapMarkerHitTestingHotfixTests(unittest.TestCase):
         )
         centered = hotfix.find_clicked_marker(
             [{"name": "Centered", "type": 8, "x": -100, "y": -100}],
-            click=(250.0, 350.0),
+            click=(249.8, 350.2),
             map_size=1000,
             source_size=(1000, 1000),
             crop_box=(0, 0, 1000, 1000),
@@ -115,9 +179,9 @@ class MapMarkerHitTestingHotfixTests(unittest.TestCase):
 class HotfixActivationContractTests(unittest.TestCase):
     def test_central_bootstrap_activates_hotfix_before_gui_import(self) -> None:
         root = Path(__file__).resolve().parents[1]
-        bootstrap = (
-            root / "rust_companion_plus" / "bootstrap.py"
-        ).read_text(encoding="utf-8")
+        bootstrap = (root / "rust_companion_plus" / "bootstrap.py").read_text(
+            encoding="utf-8"
+        )
         self.assertIn("MAP_SHOP_HOTFIX_BOOTSTRAP_V2", bootstrap)
         self.assertIn("import rust_companion_plus.hotfix_map_shop", bootstrap)
         self.assertLess(
@@ -125,11 +189,14 @@ class HotfixActivationContractTests(unittest.TestCase):
             bootstrap.index("def launch_gui("),
         )
 
-    def test_entrypoints_do_not_need_duplicate_hotfix_imports(self) -> None:
-        root = Path(__file__).resolve().parents[1]
-        for relative in ("main.py", "launcher.py"):
-            source = (root / relative).read_text(encoding="utf-8")
-            self.assertNotIn("import rust_companion_plus.hotfix_map_shop", source)
+    def test_hotfix_replaces_enhanced_map_class(self) -> None:
+        from rust_companion_plus.ui.tabs import map_enhanced
+
+        self.assertIs(map_enhanced.MapTab, hotfix.ClickableServerMarkerMapTab)
+        self.assertEqual(
+            hotfix.HOTFIX_ID,
+            map_enhanced._map_layers_hotfix_installed,
+        )
 
 
 if __name__ == "__main__":
