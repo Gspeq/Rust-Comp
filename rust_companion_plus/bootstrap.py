@@ -48,6 +48,8 @@ from rust_companion_plus.services.bootstrap_health import (
 import rust_companion_plus.hotfix_map_shop  # noqa: F401
 # MAP_INTERACTION_STARTER_HOTFIX_V4
 import rust_companion_plus.hotfix_map_interaction_v4  # noqa: F401
+# OFFLINE_SAVED_PROFILE_HOTFIX_V5
+import rust_companion_plus.hotfix_offline_saved_profiles_v5  # noqa: F401
 
 LAUNCHER_SETUP_VERSION = 3
 RESET = "\033[0m"
@@ -336,7 +338,7 @@ def choose_launch_mode(
             else " — none saved yet"
         )
         print(
-            "  [S] View saved server profile"
+            "  [S] Open saved server offline (Rust can be closed)"
             f"{saved_label}"
         )
         print("  [Q] Quit")
@@ -1366,8 +1368,8 @@ def launch_gui(
             _paint(
                 "\nOPENING SAVED SERVER PROFILE — Rust process "
                 "detection is skipped. Cached data loads immediately; "
-                "saved Rust+ credentials continue refreshing when the "
-                "server and internet are reachable.\n",
+                "automatic Rust+ polling stays off until Try live "
+                "Rust+ refresh is selected.\n",
                 GREEN,
                 bold=True,
             )
