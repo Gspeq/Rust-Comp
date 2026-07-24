@@ -50,6 +50,8 @@ import rust_companion_plus.hotfix_map_shop  # noqa: F401
 import rust_companion_plus.hotfix_map_interaction_v4  # noqa: F401
 # OFFLINE_SAVED_PROFILE_HOTFIX_V5
 import rust_companion_plus.hotfix_offline_saved_profiles_v5  # noqa: F401
+# SHOP_RELIABILITY_HOTFIX_V6
+import rust_companion_plus.hotfix_shop_reliability_v6  # noqa: F401
 
 LAUNCHER_SETUP_VERSION = 3
 RESET = "\033[0m"
