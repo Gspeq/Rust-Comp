@@ -1,0 +1,18 @@
+# Rust build output
+/target/
+
+# Node/Vite build output
+/apps/desktop/node_modules/
+/apps/desktop/dist/
+/apps/desktop/.vite/
+
+# Python caches
+__pycache__/
+*.py[cod]
+
+# Local credentials and runtime data
+.env
+*.db
+*.db-shm
+*.db-wal
+*.log

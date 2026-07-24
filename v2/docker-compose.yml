@@ -1,0 +1,16 @@
+services:
+  postgres:
+    image: postgres:16-alpine
+    environment:
+      POSTGRES_USER: rust_companion
+      POSTGRES_PASSWORD: rust_companion_dev
+      POSTGRES_DB: rust_companion
+    ports: ["5432:5432"]
+    volumes: ["rust_companion_pg:/var/lib/postgresql/data"]
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U rust_companion"]
+      interval: 5s
+      timeout: 5s
+      retries: 10
+volumes:
+  rust_companion_pg:

@@ -1,0 +1,18 @@
+[package]
+name = "rust-companion-v2-desktop"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[lib]
+name = "rust_companion_v2_desktop_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = { version = "2", features = [] }
+
+[dependencies]
+rust-companion-v2-integrations = { path = "../../../crates/integrations" }
+serde.workspace = true
+serde_json.workspace = true
+tauri = { version = "2", features = [] }
